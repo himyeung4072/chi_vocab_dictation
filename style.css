@@ -276,7 +276,7 @@ input:focus, textarea:focus {
 
 /* ---------- Setup ---------- */
 .toggle-select { display: flex; gap: 10px; }
-.toggle-select .chip { flex: 1; }
+.toggle-select .chip { flex: 1; padding: 6px 8px; font-size: .9rem; white-space: nowrap; }
 .notice {
   background: #FFF3CD;
   border: 2px solid #FFE08A;
@@ -489,11 +489,13 @@ input:focus, textarea:focus {
   transform-origin: left;
   animation: growX .7s cubic-bezier(.3, 1.2, .5, 1) backwards;
 }
-.rate-row .pct { flex: none; width: 5.6em; text-align: right; font-size: .8rem; color: var(--muted); }
+.rate-row .pct { flex: none; text-align: right; font-size: .8rem; color: var(--muted); white-space: nowrap; }
 
 /* ---------- History ---------- */
 .day-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .day-head .t { min-width: 0; }
+.day-head .t b { white-space: nowrap; }
+.day-head .btn { flex: none; white-space: nowrap; }
 
 .rec { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 2px dashed var(--line); }
 .rec:first-of-type { border-top: 0; }
@@ -643,3 +645,19 @@ input:focus, textarea:focus {
     transition-duration: .01ms !important;
   }
 }
+
+/* ---------- 揀詞語數量 ---------- */
+.count-box { margin-top: 12px; padding-top: 6px; border-top: 2px dashed var(--line); text-align: center; }
+.count-box .field-label { text-align: left; }
+.stepper { display: flex; align-items: center; justify-content: center; gap: 18px; }
+.icon-btn.step { width: 56px; height: 56px; font-size: 1.8rem; font-weight: 800; line-height: 1; color: var(--orange-d); border-color: var(--orange); }
+.icon-btn[disabled] { opacity: .35; pointer-events: none; }
+.count-val { min-width: 7em; }
+.count-val b { display: inline-block; font-size: 2.6rem; line-height: 1.1; color: var(--orange-d); }
+.count-val b.pop { animation: chipPop .35s cubic-bezier(.3, 1.6, .5, 1); }
+.count-val small { color: var(--muted); font-size: .9rem; }
+#countQuick { justify-content: center; margin-top: 10px; }
+#countQuick:empty { display: none; }
+
+/* 睇答案按鈕解鎖 */
+.btn.pop-in { animation: chipPop .45s cubic-bezier(.3, 1.6, .5, 1); }
