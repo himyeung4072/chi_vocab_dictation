@@ -133,7 +133,12 @@ function normaliseStudent(st) {
   st.bank = st.bank || {};
   st.history = Array.isArray(st.history) ? st.history : [];
   st.history.forEach(function (h) { if (!h.id) h.id = uid(); });
-  st.prefs = st.prefs || { order: 'seq', lang: 'yue', speed: 'normal' };
+  const pf = st.prefs || {};
+  st.prefs = {
+    order: pf.order === 'random' ? 'random' : 'seq',
+    lang: LANGS[pf.lang] ? pf.lang : 'yue',
+    speed: SPEEDS[pf.speed] ? pf.speed : 'normal'
+  };
   st.grade = Math.min(6, Math.max(1, Number(st.grade) || 1));
   st.avatar = st.avatar || AVATARS[0];
   return st;
@@ -178,7 +183,7 @@ if ('speechSynthesis' in window) {
   refreshVoices();
   window.speechSynthesis.addEventListener('voiceschanged', function () {
     refreshVoices();
-    if (ui.view === 'setup') updateVoiceNotice();
+    if (ui.view === 'settings') updateVoiceNotice();
   });
 }
 
@@ -240,8 +245,9 @@ function voiceWarning(langKey) {
 
 function updateVoiceNotice() {
   const box = document.getElementById('voiceNotice');
-  if (!box || !ui.setup) return;
-  const w = voiceWarning(ui.setup.lang);
+  const s = me();
+  if (!box || !s) return;
+  const w = voiceWarning(s.prefs.lang);
   box.innerHTML = w ? '<div class="notice">⚠️ ' + esc(w) + '</div>' : '';
 }
 
@@ -400,7 +406,7 @@ function render() {
   if (ui.view !== 'home' && ui.view !== 'add' && !s) ui.view = 'home';
   const views = {
     home: homeView, add: addView, menu: menuView, lessons: lessonsView,
-    lessonEdit: lessonEditView, setup: setupView, quiz: quizView,
+    lessonEdit: lessonEditView, setup: setupView, settings: settingsView, quiz: quizView,
     result: resultView, stats: statsView, history: historyView, record: recordView
   };
   // 只有換畫面先播入場動畫，畫面內更新唔會閃
@@ -447,7 +453,8 @@ function addView() {
 
 function menuView(s) {
   const bankCount = Object.keys(s.bank).length;
-  return '<div class="topnav"><button class="back" data-action="goHome">← 換人</button></div>' +
+  return '<div class="topnav"><button class="back" data-action="goHome">← 換人</button>' +
+    '<button class="icon-btn gear" data-action="goSettings" aria-label="設定" title="設定">⚙️</button></div>' +
     '<div class="greet"><div class="big-av">' + s.avatar + '</div>' +
     '<h2>' + esc(s.name) + '，你好！</h2><p class="muted">' + GRADES[s.grade - 1] + '</p></div>' +
     '<div class="menu-grid">' +
@@ -507,7 +514,8 @@ function setupView(s) {
       sourceBlock = '<p class="muted">默對就打敗怪獸。有啲字要默對幾次先剔走。</p><div class="chips" style="margin-top:10px">' +
         bankWords.map(function (w) {
           const b = s.bank[w];
-          return '<span class="chip word">' + esc(w) + ' <small class="muted">×' + (b.need - b.progress) + '</small></span>';
+          return '<span class="chip word">' + esc(w) + ' <small class="muted">×' + (b.need - b.progress) + '</small>' +
+            '<button class="chip-x" data-action="removeBank" data-word="' + esc(w) + '" aria-label="刪除「' + esc(w) + '」">✕</button></span>';
         }).join('') + '</div>';
     }
   } else if (!s.lessons.length) {
@@ -521,15 +529,11 @@ function setupView(s) {
       '<button class="link" data-action="allLessons">全選 / 取消全選</button>' +
       '<div id="countBox" class="count-box">' +
       '<span class="field-label" style="margin-top:6px">默幾多個詞語？</span>' +
-      '<div class="stepper">' +
-      '<button class="icon-btn step" id="countMinus" data-action="countStep" data-d="-1" aria-label="少一個">−</button>' +
-      '<div class="count-val"><b id="countNum">0</b><small> / <span id="countMax">0</span> 個</small></div>' +
-      '<button class="icon-btn step" id="countPlus" data-action="countStep" data-d="1" aria-label="多一個">＋</button></div>' +
-      '<div class="chips" id="countQuick"></div>' +
+      '<div class="count-val"><b id="countNum">12</b><small> / <span id="countMax">0</span> 個</small></div>' +
+      '<input type="range" id="countRange" class="range" min="1" max="1" step="1" value="1" aria-label="默書詞語數量">' +
       '<p class="muted center" id="countHint"></p></div>';
   }
 
-  const warn = voiceWarning(c.lang);
   const canStart = c.source === 'bank' ? bankWords.length > 0 : s.lessons.length > 0;
   const group = function (key, inner) {
     return '<div class="toggle-select" data-group="' + key + '">' + inner + '</div>';
@@ -539,21 +543,34 @@ function setupView(s) {
     '<div class="card"><h2>默書設定</h2>' +
     '<span class="field-label">默邊度？</span>' +
     group('source', chip('source', 'lessons', '📚 課文') + chip('source', 'bank', '👾 錯字怪獸')) +
-    '<div style="margin-top:14px">' + sourceBlock + '</div>' +
+    '<div style="margin-top:14px">' + sourceBlock + '</div></div>' +
+    '<button class="btn block" style="margin-top:20px;min-height:68px;font-size:1.3rem"' + (canStart ? '' : ' disabled') + ' data-action="startQuiz">開始默書 🚀</button>';
+}
+
+/* 設定頁：次序、預設朗讀語言、朗讀速度（存喺 s.prefs，每位同學一份） */
+function settingsView(s) {
+  const p = s.prefs;
+  const chip = function (key, val, label) {
+    return '<button class="chip' + (p[key] === val ? ' on' : '') + '" data-action="setPref" data-key="' + key + '" data-val="' + val + '">' + label + '</button>';
+  };
+  const group = function (key, inner) {
+    return '<div class="toggle-select" data-group="' + key + '">' + inner + '</div>';
+  };
+  const warn = voiceWarning(p.lang);
+  return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
+    '<div class="card"><h2>設定</h2>' +
     '<span class="field-label">次序</span>' + group('order', chip('order', 'seq', '➡️ 順序') + chip('order', 'random', '🔀 亂序')) +
     '<span class="field-label">預設朗讀語言</span>' + group('lang', chip('lang', 'yue', LANGS.yue.label) + chip('lang', 'cmn', LANGS.cmn.label)) +
     '<p class="muted" style="margin-top:6px">默書時，每個詞語都可以隨時轉語言再聽。</p>' +
     '<span class="field-label">朗讀速度</span>' +
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
-    '<div id="voiceNotice">' + (warn ? '<div class="notice">⚠️ ' + esc(warn) + '</div>' : '') + '</div></div>' +
-    '<button class="btn block" style="margin-top:20px;min-height:68px;font-size:1.3rem"' + (canStart ? '' : ' disabled') + ' data-action="startQuiz">開始默書 🚀</button>';
+    '<div id="voiceNotice">' + (warn ? '<div class="notice">⚠️ ' + esc(warn) + '</div>' : '') + '</div></div>';
 }
 
 function initSetup(s, source) {
   ui.setup = {
-    source: source, lessonIds: [], count: null,   // count: null = 全部詞語
-    order: s.prefs.order, lang: s.prefs.lang, speed: s.prefs.speed
+    source: source, lessonIds: [], count: 12   // count: 12 = 預設；null = 全部詞語
   };
 }
 
@@ -574,32 +591,17 @@ function refreshCount() {
   if (!box || !ui.setup) return;
   const c = ui.setup;
   const total = setupTotal(me(), c);
-  if (c.count != null && (c.count >= total || c.count < 1)) c.count = null;
-  const n = c.count == null ? total : c.count;
+  const n = Math.max(0, c.count == null ? total : Math.min(c.count, total));
 
-  const num = document.getElementById('countNum');
-  if (num.textContent !== String(n)) {
-    num.textContent = n;
-    num.classList.remove('pop');
-    void num.offsetWidth;
-    num.classList.add('pop');
-  }
+  // 數量 = 總數時顯示「全部」；拖動滑桿時唔播動畫
+  document.getElementById('countNum').textContent = n === total && total > 0 ? '全部' : n;
   document.getElementById('countMax').textContent = total;
-  document.getElementById('countMinus').disabled = total === 0 || n <= 1;
-  document.getElementById('countPlus').disabled = total === 0 || n >= total;
-
-  // 快選：只顯示少過總數嘅數字，所以永遠揀唔到多過總數
-  const quick = document.getElementById('countQuick');
-  if (quick.dataset.total !== String(total)) {
-    quick.dataset.total = String(total);
-    quick.innerHTML = [5, 10, 15, 20].filter(function (v) { return v < total; }).map(function (v) {
-      return '<button class="chip" data-action="countSet" data-val="' + v + '">' + v + '</button>';
-    }).join('') + (total ? '<button class="chip" data-action="countSet" data-val="all">全部 (' + total + ')</button>' : '');
-  }
-  Array.prototype.forEach.call(quick.children, function (b) {
-    const v = b.dataset.val;
-    b.classList.toggle('on', v === 'all' ? c.count == null : Number(v) === c.count);
-  });
+  const range = document.getElementById('countRange');
+  range.max = Math.max(total, 1);
+  range.value = n;
+  range.disabled = total === 0;
+  range.setAttribute('aria-valuetext', n === total && total > 0 ? '全部 ' + total + ' 個' : n + ' 個');
+  range.style.setProperty('--pct', total > 1 ? ((n - 1) / (total - 1) * 100) + '%' : '100%');
 
   document.getElementById('countHint').textContent = !total ? '先揀課文' :
     n < total ? '由 ' + total + ' 個詞語入面隨機抽 ' + n + ' 個' : '默晒全部 ' + total + ' 個詞語';
@@ -909,10 +911,16 @@ function speakCurrent(rate) {
   const idx = q.idx;
   // 只處理「同一題」嘅朗讀事件，上一題遲來嘅完結訊號唔可以解鎖下一題
   const same = function () { return ui.quiz === q && q.idx === idx; };
+  setWaiting(false);   // 一開始朗讀，「預備緊」提示一定要走
   speak(q.words[q.idx], q.curLang, rate || SPEEDS[q.speed].rate, {
-    onstart: function () { if (same()) setSpeaking(true); },
+    onstart: function () {
+      if (!same()) return;
+      setWaiting(false);
+      setSpeaking(true);
+    },
     onend: function () {
       if (!same()) return;
+      setWaiting(false);
       setSpeaking(false);
       unlockReveal();   // 讀完先可以睇答案
     }
@@ -945,8 +953,8 @@ function scheduleSpeak(ms) {
   setWaiting(true);
   timers.speak = setTimeout(function () {
     timers.speak = null;
-    if (ui.view !== 'quiz' || ui.quiz.phase !== 'listen') return;
     setWaiting(false);
+    if (ui.view !== 'quiz' || ui.quiz.phase !== 'listen') return;
     speakCurrent();
   }, ms);
 }
@@ -1120,9 +1128,32 @@ Object.assign(actions, {
   setOpt: function (el) {
     const key = el.dataset.key;
     ui.setup[key] = el.dataset.val;
-    if (key === 'source') { render(); return; }  // 內容唔同，要重畫
+    render();  // 內容唔同，要重畫
+  },
+  removeBank: function (el) {
+    const s = me();
+    const w = el.dataset.word;
+    if (!s.bank[w]) return;
+    confirmBox({
+      icon: '👾', title: '刪除「' + w + '」？',
+      text: '會由錯字怪獸移走，之後唔會再喺怪獸默書出現。成績紀錄會保留。',
+      okText: '刪除', danger: true
+    }, function () {
+      delete s.bank[w];
+      const ws = s.wordStats[w];
+      if (ws && ws.bankEntries) ws.bankEntries = Math.max(0, ws.bankEntries - 1);
+      saveDB();
+      toast('已刪除');
+      render();
+    });
+  },
+  goSettings: function () { go('settings'); },
+  setPref: function (el) {
+    const s = me();
+    s.prefs[el.dataset.key] = el.dataset.val;
+    saveDB();
     selectInGroup(el);
-    if (key === 'lang') updateVoiceNotice();
+    if (el.dataset.key === 'lang') updateVoiceNotice();
   },
   toggleLesson: function (el) {
     const ids = ui.setup.lessonIds;
@@ -1131,22 +1162,6 @@ Object.assign(actions, {
     el.classList.toggle('on');
     el.classList.add('pop');
     setTimeout(function () { el.classList.remove('pop'); }, 450);
-    refreshCount();
-  },
-  countStep: function (el) {
-    const c = ui.setup;
-    const total = setupTotal(me(), c);
-    if (!total) return;
-    const cur = c.count == null ? total : c.count;
-    const next = Math.min(total, Math.max(1, cur + Number(el.dataset.d)));
-    c.count = next >= total ? null : next;
-    refreshCount();
-  },
-  countSet: function (el) {
-    const c = ui.setup;
-    const total = setupTotal(me(), c);
-    const v = el.dataset.val === 'all' ? null : Number(el.dataset.val);
-    c.count = v == null || v >= total ? null : v;
     refreshCount();
   },
   allLessons: function () {
@@ -1160,7 +1175,8 @@ Object.assign(actions, {
   },
   testVoice: function () {
     unlockSpeech();
-    speak('你好，我哋開始默書啦', ui.setup.lang, SPEEDS[ui.setup.speed].rate);
+    const p = me().prefs;
+    speak('你好，我哋開始默書啦', p.lang, SPEEDS[p.speed].rate);
   },
 
   startQuiz: function () {
@@ -1186,14 +1202,13 @@ Object.assign(actions, {
     const total = words.length;
     // 課文模式可以揀默幾多個：最少 1 個，最多係全部，超出嘅數字會被限制返
     const n = c.source === 'lessons' && c.count != null ? Math.max(1, Math.min(c.count, total)) : total;
-    words = pickWords(words, n, c.order);
+    const p = s.prefs;   // 次序、朗讀語言、速度全部由設定頁讀取
+    words = pickWords(words, n, p.order);
     if (n < total) label += '（抽 ' + n + ' 個）';
-    s.prefs = { order: c.order, lang: c.lang, speed: c.speed };
-    saveDB();
     unlockSpeech();
     ui.quiz = {
       source: c.source, label: label, words: words, idx: 0, results: [],
-      added: [], removed: [], hurt: [], lang: c.lang, speed: c.speed, shown: 0
+      added: [], removed: [], hurt: [], lang: p.lang, speed: p.speed, shown: 0
     };
     prepareQuestion(false);  // 第一題跟住畫面入場動畫，唔使再滑入
     go('quiz');
@@ -1330,6 +1345,12 @@ document.addEventListener('input', function (e) {
   if (e.target.id === 'nameInput') ui.form.name = e.target.value;
   if (e.target.id === 'lessonWords') {
     document.getElementById('wordCount').textContent = parseWords(e.target.value).length;
+  }
+  if (e.target.id === 'countRange' && ui.setup) {
+    const total = setupTotal(me(), ui.setup);
+    const v = Number(e.target.value);
+    ui.setup.count = v >= total ? null : v;   // 拉到最右 = 全部
+    refreshCount();
   }
 });
 
