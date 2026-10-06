@@ -435,14 +435,19 @@ function homeView() {
     '<input type="file" id="importFile" accept="application/json,.json" hidden>';
 }
 
+/* 公仔選擇 chips（新增同學同設定頁共用）；action 係撳落去執行嘅 data-action */
+function avatarChips(current, action) {
+  return AVATARS.map(function (a) {
+    return '<button class="chip avatar' + (current === a ? ' on' : '') + '" data-action="' + action + '" data-key="avatar" data-val="' + a + '" aria-label="公仔 ' + a + '">' + a + '</button>';
+  }).join('');
+}
+
 function addView() {
   const f = ui.form;
   const grades = GRADES.map(function (g, i) {
     return '<button class="chip' + (f.grade === i + 1 ? ' on' : '') + '" data-action="setForm" data-key="grade" data-val="' + (i + 1) + '">' + g + '</button>';
   }).join('');
-  const avs = AVATARS.map(function (a) {
-    return '<button class="chip avatar' + (f.avatar === a ? ' on' : '') + '" data-action="setForm" data-key="avatar" data-val="' + a + '">' + a + '</button>';
-  }).join('');
+  const avs = avatarChips(f.avatar, 'setForm');
   return '<div class="topnav"><button class="back" data-action="goHome">← 返回</button></div>' +
     '<div class="card"><h2>新同學</h2>' +
     '<label class="field-label" for="nameInput">你叫咩名？</label>' +
@@ -559,7 +564,13 @@ function settingsView(s) {
   };
   const warn = voiceWarning(p.lang);
   return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
-    '<div class="card"><h2>設定</h2>' +
+    '<div class="card"><h2>我嘅資料</h2>' +
+    '<label class="field-label" for="profileName" style="margin-top:0">名稱</label>' +
+    '<div class="name-edit"><input type="text" id="profileName" maxlength="10" autocomplete="off" value="' + esc(s.name) + '" placeholder="輸入名稱" aria-describedby="profileHint">' +
+    '<button class="btn small" data-action="saveProfileName">儲存</button></div>' +
+    '<p class="field-error" id="profileHint" role="alert" hidden></p>' +
+    '<span class="field-label">揀個公仔</span><div class="chips" data-group="avatar">' + avatarChips(s.avatar, 'setMyAvatar') + '</div></div>' +
+    '<div class="card" style="margin-top:16px"><h2>設定</h2>' +
     '<span class="field-label">次序</span>' + group('order', chip('order', 'seq', '➡️ 順序') + chip('order', 'random', '🔀 亂序')) +
     '<span class="field-label">預設朗讀語言</span>' + group('lang', chip('lang', 'yue', LANGS.yue.label) + chip('lang', 'cmn', LANGS.cmn.label)) +
     '<p class="muted" style="margin-top:6px">默書時，每個詞語都可以隨時轉語言再聽。</p>' +
@@ -567,6 +578,28 @@ function settingsView(s) {
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
     '<div id="voiceNotice">' + (warn ? '<div class="notice">⚠️ ' + esc(warn) + '</div>' : '') + '</div></div>';
+}
+
+/* 設定頁改名：失焦／Enter／撳「儲存」先處理，輸入期間唔會重畫 */
+function saveProfileName() {
+  const input = document.getElementById('profileName');
+  const hint = document.getElementById('profileHint');
+  const s = me();
+  if (!input || !s) return;
+  const name = input.value.trim();
+  const fail = function (msg) {
+    hint.textContent = msg;
+    hint.hidden = false;
+    input.setAttribute('aria-invalid', 'true');
+  };
+  if (!name) { fail('名稱唔可以留空'); return; }
+  hint.hidden = true;
+  input.removeAttribute('aria-invalid');
+  input.value = name;
+  if (name === s.name) return;
+  s.name = name;
+  saveDB();
+  toast('已更新 ✓');
 }
 
 function initSetup(s, source) {
@@ -1149,6 +1182,15 @@ Object.assign(actions, {
     });
   },
   goSettings: function () { go('settings'); },
+  saveProfileName: function () { saveProfileName(); },
+  setMyAvatar: function (el) {
+    const s = me();
+    if (s.avatar === el.dataset.val) return;
+    s.avatar = el.dataset.val;
+    saveDB();
+    selectInGroup(el);
+    toast('已更新 ✓');
+  },
   setPref: function (el) {
     const s = me();
     s.prefs[el.dataset.key] = el.dataset.val;
@@ -1355,7 +1397,16 @@ document.addEventListener('input', function (e) {
   }
 });
 
+document.addEventListener('keydown', function (e) {
+  // 聯想輸入法選字時嘅 Enter 唔算確認
+  if (e.target.id === 'profileName' && e.key === 'Enter' && !e.isComposing) {
+    saveProfileName();
+    e.target.blur();
+  }
+});
+
 document.addEventListener('change', function (e) {
+  if (e.target.id === 'profileName') { saveProfileName(); return; }
   if (e.target.id !== 'importFile') return;
   const file = e.target.files && e.target.files[0];
   if (!file) return;

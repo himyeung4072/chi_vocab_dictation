@@ -725,3 +725,10 @@ input:focus, textarea:focus {
 
 /* 睇答案按鈕解鎖 */
 .btn.pop-in { animation: chipPop .45s cubic-bezier(.3, 1.6, .5, 1); }
+
+/* 設定頁：我嘅資料 */
+.name-edit { display: flex; gap: 10px; align-items: center; }
+.name-edit .btn { flex: none; }
+.field-error { color: var(--red-d); font-weight: 700; margin-top: 8px; }
+.field-error[hidden] { display: none; }
+input[aria-invalid=true] { border-color: var(--red); }
