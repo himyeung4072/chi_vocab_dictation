@@ -702,9 +702,9 @@ input:focus, textarea:focus {
 .range:focus-visible { outline: 3px solid rgba(255, 138, 61, .4); outline-offset: 2px; border-radius: 999px; }
 .range:disabled { opacity: .45; cursor: default; }
 
-/* 設定齒輪 */
-.icon-btn.gear { font-size: 1.3rem; }
-.icon-btn.gear:active { background: #FFF0D9; }
+/* 設定按鈕 */
+.btn-settings { padding: 4px 18px; }
+.btn-settings:active { transform: scale(.95); background: #FFF0D9; }
 
 /* 錯字怪獸：刪除單條 */
 .chip-x {

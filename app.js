@@ -328,7 +328,7 @@ function confirmBox(opts, onOk) {
    詞語第一次默錯 → 入庫，需要默對 1 次先剔走。
    剔走後再默錯 → 再入庫，需要默對 2 次，如此類推。
    無論喺課文模式或者錯字怪獸模式，只要默對，庫內詞語就減一次。
-   已經喺庫內又默錯 → 已默對嘅次數歸零，要求唔變。
+   已經喺庫內又默錯 → 顯示嘅「×N」（need - progress）加 1，已默對嘅次數歸零。
    bad: 寫錯咗嘅字位置（0 開始），有揀先會計單字統計。 */
 function recordAnswer(s, word, ok, bad, quiz) {
   const st = s.wordStats[word] || (s.wordStats[word] = { attempts: 0, wrong: 0, bankEntries: 0 });
@@ -355,6 +355,7 @@ function recordAnswer(s, word, ok, bad, quiz) {
       quiz.hurt.push({ word: word, left: inBank.need - inBank.progress });
     }
   } else if (inBank) {
+    inBank.need = inBank.need - inBank.progress + 1;
     inBank.progress = 0;
   } else {
     st.bankEntries += 1;
@@ -454,7 +455,7 @@ function addView() {
 function menuView(s) {
   const bankCount = Object.keys(s.bank).length;
   return '<div class="topnav"><button class="back" data-action="goHome">← 換人</button>' +
-    '<button class="icon-btn gear" data-action="goSettings" aria-label="設定" title="設定">⚙️</button></div>' +
+    '<button class="back btn-settings" data-action="goSettings" aria-label="設定">設定</button></div>' +
     '<div class="greet"><div class="big-av">' + s.avatar + '</div>' +
     '<h2>' + esc(s.name) + '，你好！</h2><p class="muted">' + GRADES[s.grade - 1] + '</p></div>' +
     '<div class="menu-grid">' +
@@ -540,7 +541,7 @@ function setupView(s) {
   };
 
   return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
-    '<div class="card"><h2>默書設定</h2>' +
+    '<div class="card"><h2>默書</h2>' +
     '<span class="field-label">默邊度？</span>' +
     group('source', chip('source', 'lessons', '📚 課文') + chip('source', 'bank', '👾 錯字怪獸')) +
     '<div style="margin-top:14px">' + sourceBlock + '</div></div>' +
@@ -1122,7 +1123,7 @@ Object.assign(actions, {
   }
 });
 
-/* ---------- 默書設定 ---------- */
+/* ---------- 默書 ---------- */
 Object.assign(actions, {
   goSetup: function (el) { initSetup(me(), el.dataset.source); go('setup'); },
   setOpt: function (el) {
