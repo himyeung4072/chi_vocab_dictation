@@ -6,6 +6,8 @@
    ===================================================== */
 
 const STORE_KEY = 'chiVocab.v1';
+const BACKUP_KEY = STORE_KEY + '_corrupt_backup';   // 載入時讀唔到嘅原始資料另存喺度
+const BACKUP_MAX = 3;   // 最多保留幾份備份
 const AVATARS = ['🐶', '🐱', '🐰', '🐼', '🦊', '🐸', '🐯', '🐨', '🐷', '🦁', '🐵', '🐥'];
 const GRADES = ['小一', '小二', '小三', '小四', '小五', '小六'];
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
@@ -31,18 +33,61 @@ const $app = document.getElementById('app');
 const $fx = document.getElementById('fx');
 
 /* ---------- 資料儲存 ---------- */
-function loadDB() {
+let loadNotice = '';   // 載入時有資料讀唔到：啟動畫好畫面後用 toast 通知
+
+/* 將原始字串另存一份，存做 { backups: [{ savedAt, raw }, ...] }（舊到新），最多 BACKUP_MAX 份。
+   同一份原始資料唔會重複寫（保留第一次嘅時間）；超過上限就丟最舊嗰份。
+   舊格式 { savedAt, raw } 會轉做第一份；讀唔明嘅舊內容原封不動搬去 _legacy，唔會靜靜雞刪走。
+   儲存空間唔夠就由最舊開始丟，直到淨返新嗰份都寫唔入先返回 false。成功返回 true */
+function backupRaw(raw) {
   try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (raw) {
-      const data = JSON.parse(raw);
-      if (data && Array.isArray(data.students)) {
-        data.students.forEach(function (st) { normaliseStudent(st); });
-        return data;
+    let list = [];
+    const old = localStorage.getItem(BACKUP_KEY);
+    if (old) {
+      let parsed = null;
+      try { parsed = JSON.parse(old); } catch (e) { /* 讀唔明，下面搬走 */ }
+      if (isObj(parsed) && Array.isArray(parsed.backups)) {
+        list = parsed.backups;
+      } else if (isObj(parsed) && typeof parsed.raw === 'string') {
+        list = [{ savedAt: parsed.savedAt, raw: parsed.raw }];   // 舊格式：轉做第一份
+      } else {
+        let legacyKey = BACKUP_KEY + '_legacy';
+        const prev = localStorage.getItem(legacyKey);
+        if (prev !== null && prev !== old) legacyKey += '_' + Date.now();   // 唔好蓋咗之前搬走嗰份
+        localStorage.setItem(legacyKey, old);
       }
     }
-  } catch (e) { /* 當作冇資料 */ }
-  return { students: [], currentId: null };
+    if (list.some(function (b) { return isObj(b) && b.raw === raw; })) return true;
+    list.push({ savedAt: new Date().toISOString(), raw: raw });
+    while (list.length > BACKUP_MAX) list.shift();
+    for (;;) {
+      try {
+        localStorage.setItem(BACKUP_KEY, JSON.stringify({ backups: list }));
+        return true;
+      } catch (e) {
+        if (list.length <= 1) return false;
+        list.shift();   // 寫唔入：丟最舊嗰份騰位再試
+      }
+    }
+  } catch (e) {
+    return false;
+  }
+}
+
+/* 載入唔會靜靜雞清空資料：只略過唔完整嘅同學；有資料讀唔到就先備份原始字串，再提示用家 */
+function loadDB() {
+  let raw = null;
+  try { raw = localStorage.getItem(STORE_KEY); } catch (e) { /* 瀏覽器唔畀讀，當作冇資料 */ }
+  if (!raw) return { students: [], currentId: null };
+  let data = null;
+  try { data = normaliseDB(JSON.parse(raw), true); } catch (e) { /* JSON 壞咗或者搵唔到同學資料 */ }
+  if (!data || data.dropped) {
+    const saved = backupRaw(raw);
+    loadNotice = (data ? '有 ' + data.dropped + ' 位同學嘅資料讀唔到，已經略過。' : '資料讀唔到，而家由空白開始。') +
+      (saved ? '原始資料已經另外備份咗。' : '而且備份唔到原始資料，可能係儲存空間唔夠。');
+  }
+  if (!data) return { students: [], currentId: null };
+  return { students: data.students, currentId: data.currentId };   // 唔好將 dropped 存入 db
 }
 
 function saveDB() {
@@ -80,10 +125,10 @@ function me() {
 }
 
 function parseWords(text) {
-  const seen = {};
+  const seen = new Set();   // 用 Set：詞語係 constructor、__proto__ 都唔會撞到物件原型
   return text.split(/[\s,，、;；]+/).map(function (w) { return w.trim(); }).filter(function (w) {
-    if (!w || seen[w]) return false;
-    seen[w] = true;
+    if (!w || seen.has(w)) return false;
+    seen.add(w);
     return true;
   });
 }
@@ -126,22 +171,136 @@ function charsHtml(word, bad) {
   }).join('');
 }
 
+/* ---------- 資料校驗（載入 localStorage 同匯入備份行同一條路） ---------- */
+function isObj(x) { return !!x && typeof x === 'object' && !Array.isArray(x); }
+function hasKey(obj, k) { return Object.prototype.hasOwnProperty.call(obj, k); }
+
+/* 數字欄位：只接受數字或者數字字串，其他（HTML、null、空字串）一律當無效 */
+function numOr(x, fallback) {
+  if (typeof x !== 'number' && !(typeof x === 'string' && x.trim() !== '')) return fallback;
+  const n = Number(x);
+  return Number.isFinite(n) ? Math.max(0, n) : fallback;
+}
+
+/* 詞語：逐個轉字串、trim、去空、去重 */
+function cleanWords(list) {
+  const seen = new Set();
+  const out = [];
+  list.forEach(function (w) {
+    if (typeof w !== 'string' && typeof w !== 'number') return;
+    const t = String(w).trim();
+    if (!t || seen.has(t)) return;
+    seen.add(t);
+    out.push(t);
+  });
+  return out;
+}
+
+/* app 儲存課文時最少要有一個詞（saveLesson 會檢查），清理後冇詞語嘅只可能係損壞資料，直接剔走 */
+function cleanLessons(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter(function (l) {
+    return isObj(l) && typeof l.id === 'string' && typeof l.title === 'string' && Array.isArray(l.words);
+  }).map(function (l) {
+    l.words = cleanWords(l.words);
+    return l;
+  }).filter(function (l) { return l.words.length > 0; });
+}
+
+/* 舊紀錄冇 planned／incomplete，當作已完成 */
+function cleanHistory(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter(function (h) {
+    return isObj(h) && typeof h.date === 'string' && !isNaN(Date.parse(h.date)) &&
+      !isNaN(numOr(h.correct, NaN)) && !isNaN(numOr(h.total, NaN));
+  }).map(function (h) {
+    h.id = typeof h.id === 'string' && h.id ? h.id : uid();
+    h.total = numOr(h.total, 0);
+    h.correct = Math.min(numOr(h.correct, 0), h.total);
+    h.label = typeof h.label === 'string' ? h.label : String(h.label == null ? '' : h.label);
+    h.lang = h.lang === 'cmn' ? 'cmn' : 'yue';
+    h.incomplete = h.incomplete === true;
+    h.planned = h.incomplete ? Math.max(h.total, numOr(h.planned, h.total)) : h.total;
+    h.wrong = Array.isArray(h.wrong) ? cleanWords(h.wrong) : [];
+    if (Array.isArray(h.results)) {
+      h.results = h.results.filter(function (r) {
+        return isObj(r) && (typeof r.word === 'string' || typeof r.word === 'number');
+      }).map(function (r) {
+        const bad = Array.isArray(r.bad) ? r.bad.filter(function (i) { return Number.isInteger(i) && i >= 0; }) : [];
+        return { word: String(r.word), ok: r.ok === true, bad: bad };
+      });
+    } else {
+      delete h.results;   // 舊版紀錄：只用 wrong
+    }
+    return h;
+  });
+}
+
+/* 統計字典：只保留物件值，數字欄位強制轉數字。
+   返回無原型字典（Object.create(null)）：詞語係 constructor、__proto__ 都只係普通 key */
+function cleanStats(obj, fields) {
+  const out = Object.create(null);
+  if (!isObj(obj)) return out;
+  Object.keys(obj).forEach(function (k) {
+    const v = obj[k];
+    if (!isObj(v)) return;
+    fields.forEach(function (f) { v[f] = numOr(v[f], 0); });
+    out[k] = v;
+  });
+  return out;
+}
+
+/* 錯字怪獸：need／progress 要係有效數字先保留。同樣返回無原型字典 */
+function cleanBank(obj) {
+  const out = Object.create(null);
+  if (!isObj(obj)) return out;
+  Object.keys(obj).forEach(function (k) {
+    const v = obj[k];
+    if (!isObj(v) || isNaN(numOr(v.need, NaN)) || isNaN(numOr(v.progress, NaN)) || !String(k).trim()) return;
+    v.need = numOr(v.need, 1);
+    v.progress = numOr(v.progress, 0);
+    out[k] = v;
+  });
+  return out;
+}
+
 function normaliseStudent(st) {
-  st.lessons = Array.isArray(st.lessons) ? st.lessons : [];
-  st.wordStats = st.wordStats || {};
-  st.charStats = st.charStats || {};
-  st.bank = st.bank || {};
-  st.history = Array.isArray(st.history) ? st.history : [];
-  st.history.forEach(function (h) { if (!h.id) h.id = uid(); });
-  const pf = st.prefs || {};
+  st.id = String(st.id);
+  st.name = String(st.name);
+  st.lessons = cleanLessons(st.lessons);
+  st.wordStats = cleanStats(st.wordStats, ['attempts', 'wrong', 'bankEntries']);
+  st.charStats = cleanStats(st.charStats, ['attempts', 'wrong']);
+  st.bank = cleanBank(st.bank);
+  st.history = cleanHistory(st.history);
+  const pf = isObj(st.prefs) ? st.prefs : {};
   st.prefs = {
     order: pf.order === 'random' ? 'random' : 'seq',
-    lang: LANGS[pf.lang] ? pf.lang : 'yue',
-    speed: SPEEDS[pf.speed] ? pf.speed : 'normal'
+    lang: hasKey(LANGS, pf.lang) ? pf.lang : 'yue',
+    speed: hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal'
   };
-  st.grade = Math.min(6, Math.max(1, Number(st.grade) || 1));
-  st.avatar = st.avatar || AVATARS[0];
+  st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
+  st.avatar = AVATARS.indexOf(st.avatar) !== -1 ? st.avatar : AVATARS[0];
   return st;
+}
+
+/* 成功：返回 { students, currentId, dropped }。
+   lenient（只有載入 localStorage 用）：唔完整嘅同學會略過，dropped 係略過咗幾多位；
+   冇 lenient（匯入備份）：有一位唔完整就 throw，message 係畀用家睇嘅原因 */
+function normaliseDB(data, lenient) {
+  if (!isObj(data) || !Array.isArray(data.students)) throw new Error('搵唔到同學資料');
+  const students = [];
+  let dropped = 0;
+  data.students.forEach(function (st, i) {
+    if (!isObj(st) || !st.id || !st.name) {
+      if (!lenient) throw new Error('第 ' + (i + 1) + ' 位同學資料唔完整');
+      dropped += 1;
+      return;
+    }
+    if (!lenient) { students.push(normaliseStudent(st)); return; }
+    try { students.push(normaliseStudent(st)); } catch (e) { dropped += 1; }
+  });
+  const ids = students.map(function (st) { return st.id; });
+  return { students: students, currentId: ids.indexOf(data.currentId) !== -1 ? data.currentId : null, dropped: dropped };
 }
 
 function newStudent(name, grade, avatar) {
@@ -252,12 +411,14 @@ function updateVoiceNotice() {
 }
 
 /* ---------- 特效 ---------- */
-function toast(msg) {
+/* ms（可選）：顯示幾耐，較長嘅訊息用；冇傳就同以前一樣 2.5 秒 */
+function toast(msg, ms) {
   const el = document.createElement('div');
   el.className = 'toast';
   el.textContent = msg;
+  if (ms) el.style.animationDuration = (ms - 100) + 'ms';
   document.body.appendChild(el);
-  setTimeout(function () { el.remove(); }, 2500);
+  setTimeout(function () { el.remove(); }, ms || 2500);
 }
 
 function confetti(count) {
@@ -291,8 +452,9 @@ document.addEventListener('pointerdown', function (e) {
 });
 
 /* ---------- 確認框 ----------
-   opts: { icon, title, text, okText, danger }；撳確定先會執行 onOk */
-function confirmBox(opts, onOk) {
+   opts: { icon, title, text, okText, danger }；撳確定先會執行 onOk
+   onCancel（可選）：撳取消、撳背景或者 Esc 關閉時執行 */
+function confirmBox(opts, onOk, onCancel) {
   const back = document.createElement('div');
   back.className = 'modal-back';
   back.innerHTML =
@@ -303,19 +465,22 @@ function confirmBox(opts, onOk) {
     '<button class="btn ' + (opts.danger ? 'red' : 'green') + '" data-m="yes">' + esc(opts.okText || '確定') + '</button>' +
     '</div></div>';
 
-  function onKey(e) { if (e.key === 'Escape') close(); }
+  function onKey(e) { if (e.key === 'Escape') dismiss(); }
   function close() {
     document.removeEventListener('keydown', onKey);
     back.remove();
+  }
+  function dismiss() {
+    close();
+    if (onCancel) onCancel();
   }
 
   back.addEventListener('click', function (e) {
     const b = e.target.closest('[data-m]');
     if (b) {
-      close();
-      if (b.dataset.m === 'yes') onOk();
+      if (b.dataset.m === 'yes') { close(); onOk(); } else dismiss();
     } else if (e.target === back) {
-      close();
+      dismiss();
     }
   });
   document.addEventListener('keydown', onKey);
@@ -422,7 +587,7 @@ function render() {
 function homeView() {
   const cards = db.students.map(function (s) {
     return '<button class="student-card" data-action="pickStudent" data-id="' + esc(s.id) + '">' +
-      '<span class="av">' + s.avatar + '</span><b>' + esc(s.name) + '</b>' +
+      '<span class="av">' + esc(s.avatar) + '</span><b>' + esc(s.name) + '</b>' +
       '<small class="muted">' + GRADES[s.grade - 1] + '</small></button>';
   }).join('');
   return '<header class="hero"><div class="logo">🐾</div><h1>默書樂園</h1>' +
@@ -461,7 +626,7 @@ function menuView(s) {
   const bankCount = Object.keys(s.bank).length;
   return '<div class="topnav"><button class="back" data-action="goHome">← 換人</button>' +
     '<button class="back btn-settings" data-action="goSettings" aria-label="設定">設定</button></div>' +
-    '<div class="greet"><div class="big-av">' + s.avatar + '</div>' +
+    '<div class="greet"><div class="big-av">' + esc(s.avatar) + '</div>' +
     '<h2>' + esc(s.name) + '，你好！</h2><p class="muted">' + GRADES[s.grade - 1] + '</p></div>' +
     '<div class="menu-grid">' +
     '<button class="menu-btn" data-action="goSetup" data-source="lessons"><span class="ico">✏️</span>開始默書</button>' +
@@ -577,7 +742,10 @@ function settingsView(s) {
     '<span class="field-label">朗讀速度</span>' +
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
-    '<div id="voiceNotice">' + (warn ? '<div class="notice">⚠️ ' + esc(warn) + '</div>' : '') + '</div></div>';
+    '<div id="voiceNotice">' + (warn ? '<div class="notice">⚠️ ' + esc(warn) + '</div>' : '') + '</div></div>' +
+    // 字體署名（CC BY 4.0）：靜態文字，唔涉及資料
+    '<p class="muted credit">答案字型：<a href="https://freehkfonts.opensource.hk/download/" target="_blank" rel="noopener">自由香港楷書</a> (Free HK Kai)，' +
+    '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>；改編自全字庫正楷體。</p>';
 }
 
 /* 設定頁改名：失焦／Enter／撳「儲存」先處理，輸入期間唔會重畫 */
@@ -610,13 +778,12 @@ function initSetup(s, source) {
 
 /* 已揀課文入面嘅詞語總數（重複嘅詞語只計一次） */
 function setupTotal(s, c) {
-  const seen = {};
-  let n = 0;
+  const seen = new Set();
   s.lessons.forEach(function (l) {
     if (c.lessonIds.indexOf(l.id) === -1) return;
-    l.words.forEach(function (w) { if (!seen[w]) { seen[w] = true; n += 1; } });
+    l.words.forEach(function (w) { seen.add(w); });
   });
-  return n;
+  return seen.size;
 }
 
 /* 更新「默幾多個詞語」：只改需要變嘅地方，唔重畫整個面板 */
@@ -649,6 +816,15 @@ function pickWords(all, n, order) {
   return idx.map(function (i) { return all[i]; });
 }
 
+/* 開始默書時預先載入答案字體（自由香港楷書分片），避免揭曉答案時先閃一下後備字體。
+   唔等結果、唔阻塞默書；載入失敗就當冇事，逐字退回系統楷書／serif。詞語係資料，唔 log */
+function preloadAnswerFont(words) {
+  if (!document.fonts || !document.fonts.load) return;
+  try {
+    document.fonts.load('400 1em "Free HK Kai"', words.join('')).catch(function () {});
+  } catch (e) { /* 字體預載失敗唔影響默書 */ }
+}
+
 /* ---------- 默書畫面 ---------- */
 function langSwitch(q) {
   return '<div class="lang-switch" role="group" aria-label="朗讀語言">' +
@@ -672,9 +848,10 @@ function listenHtml(q) {
 }
 
 function answerHtml(q, word) {
-  const vw = Math.min(18, Math.floor(80 / Math.max(Array.from(word).length, 1)));
+  // 字號由 CSS 按答案框實際闊度計（--n = 字數），見 style.css .answer-box
+  const n = Math.max(Array.from(word).length, 1);
   return '<p class="prompt">答案係</p>' +
-    '<div class="answer-box" style="font-size:min(' + vw + 'vw,110px)">' + esc(word) + '</div>' +
+    '<div class="answer-wrap"><div class="answer-box" style="--n:' + n + '">' + esc(word) + '</div></div>' +
     langSwitch(q) +
     '<div><button class="btn ghost small" data-action="speak">🔊 再聽一次</button></div>' +
     '<p class="prompt" style="margin-top:18px">你寫啱咗嗎？</p>' +
@@ -706,9 +883,11 @@ function feedbackHtml(s, q, word) {
     }
   }
   return (ok ? '<div class="burst">' + burst + '</div>' : '') +
-    '<div class="fb-av">' + s.avatar + '</div>' +
+    '<div class="fb-av">' + esc(s.avatar) + '</div>' +
     '<h2>' + esc(q.fb.msg) + '</h2>' +
-    (ok ? '' : '<div class="fb-word">' + charsHtml(word, q.fb.bad) + '</div>');
+    // --n = 字數、--b = 標紅嘅字數：字號由 CSS 按畫面闊度計，長詞語唔會斷行（見 style.css .fb-word）
+    (ok ? '' : '<div class="fb-word" style="--n:' + Math.max(Array.from(word).length, 1) + ';--b:' + (q.fb.bad || []).length + '">' +
+      charsHtml(word, q.fb.bad) + '</div>');
 }
 
 function quizView(s) {
@@ -728,7 +907,7 @@ function quizView(s) {
 
   return '<div class="quiz-top"><button class="quit" data-action="quit" aria-label="停止默書">✕</button>' +
     '<div class="track"><div class="fill" style="width:' + (q.shown * 100) + '%"></div>' +
-    '<div class="runner" style="left:calc((100% - 32px) * ' + q.shown + ')">' + s.avatar + '</div>' +
+    '<div class="runner" style="left:calc((100% - 32px) * ' + q.shown + ')">' + esc(s.avatar) + '</div>' +
     '<span class="flag">🏁</span></div>' +
     '<div class="count">' + (q.idx + 1) + ' / ' + total + '</div></div>' +
     '<div class="card quiz-card' + cls + '">' + body + '</div>';
@@ -760,10 +939,15 @@ function resultView(s) {
   const r = ui.result;
   const p = pct(r.correct, r.total);
   const stars = p === 100 ? 3 : p >= 80 ? 2 : p >= 50 ? 1 : 0;
-  const mascot = p === 100 ? '🏆' : p >= 80 ? s.avatar : p >= 50 ? '💪' : '🤗';
-  const msg = p === 100 ? '全部啱晒！你好叻呀！' : p >= 80 ? '好勁呀！差啲就滿分！' : p >= 50 ? '幾好呀，繼續努力！' : '唔緊要，多練習就會進步！';
+  const mascot = r.incomplete ? '📝' : p === 100 ? '🏆' : p >= 80 ? esc(s.avatar) : p >= 50 ? '💪' : '🤗';
+  const msg = r.incomplete ? '答啱咗 ' + r.correct + ' 題。下次試吓默晒全部！' :
+    p === 100 ? '全部啱晒！你好叻呀！' : p >= 80 ? '好勁呀！差啲就滿分！' : p >= 50 ? '幾好呀，繼續努力！' : '唔緊要，多練習就會進步！';
   let starHtml = '';
   for (let i = 0; i < 3; i++) starHtml += '<span>' + (i < stars ? '⭐' : '☆') + '</span>';
+  // 中途停止：唔顯示星星同分數，改為顯示答咗幾多題
+  const head = r.incomplete
+    ? '<div class="score inc">未完成：答咗 ' + r.total + ' / ' + r.planned + ' 題</div>'
+    : '<div class="stars">' + starHtml + '</div><div class="score">' + r.correct + ' / ' + r.total + '</div>';
 
   let extra = '';
   if (r.wrong.length) extra += '<div class="result-section"><h3>❌ 要再練習嘅字</h3>' + wordChips(r.wrong) + '</div>';
@@ -774,9 +958,7 @@ function resultView(s) {
   }
   if (r.removed.length) extra += '<div class="result-section"><h3>🎉 打敗咗怪獸（已經記得）</h3>' + wordChips(r.removed) + '</div>';
 
-  return '<div class="card result-card"><div class="mascot">' + mascot + '</div>' +
-    '<div class="stars">' + starHtml + '</div>' +
-    '<div class="score">' + r.correct + ' / ' + r.total + '</div>' +
+  return '<div class="card result-card"><div class="mascot">' + mascot + '</div>' + head +
     '<p>' + msg + '</p>' + extra + '</div>' +
     '<div class="stack" style="margin-top:20px">' +
     '<button class="btn block" data-action="again">再默一次 🔁</button>' +
@@ -786,17 +968,27 @@ function resultView(s) {
 
 function recRow(h) {
   const p = pct(h.correct, h.total);
-  const cls = p >= 80 ? '' : p >= 50 ? ' mid' : ' low';
+  const cls = h.incomplete ? ' inc' : p >= 80 ? '' : p >= 50 ? ' mid' : ' low';
   return '<div class="rec"><button class="rec-main" data-action="openRecord" data-id="' + esc(h.id) + '">' +
     '<span class="rec-time">' + shortDate(h.date) + ' ' + timeLabel(h.date) + '</span>' +
     '<span class="rec-label">' + esc(h.label) + '</span>' +
+    (h.incomplete ? '<span class="rec-tag">未完成</span>' : '') +
     '<span class="rec-score' + cls + '">' + h.correct + '/' + h.total + '</span></button>' +
     '<button class="icon-btn" data-action="deleteRecord" data-id="' + esc(h.id) + '" aria-label="刪除呢次紀錄">🗑</button></div>';
 }
 
+/* 平均正確率：中途停止（未完成）嘅紀錄唔計；冇完成紀錄就顯示「—」 */
+function avgText(list) {
+  const done = list.filter(function (h) { return !h.incomplete; });
+  if (!done.length) return '—';
+  const c = done.reduce(function (a, h) { return a + h.correct; }, 0);
+  const t = done.reduce(function (a, h) { return a + h.total; }, 0);
+  return pct(c, t) + '%';
+}
+
 /* 由默書紀錄整理出：每個詞語入面，邊幾個字曾經寫錯（位置） */
 function badIndexMap(s) {
-  const map = {};
+  const map = Object.create(null);   // 詞語做 key，唔可以撞到 constructor 等原型屬性
   s.history.forEach(function (h) {
     (h.results || []).forEach(function (r) {
       if (r.ok || !r.bad || !r.bad.length) return;
@@ -813,14 +1005,15 @@ function statsView(s) {
     return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
       '<div class="card"><h2>我的成績</h2><div class="empty"><span class="em">📊</span>仲未有成績，去默一次書啦！</div></div>';
   }
-  const sumC = hist.reduce(function (a, h) { return a + h.correct; }, 0);
-  const sumT = hist.reduce(function (a, h) { return a + h.total; }, 0);
+  const avg = avgText(hist);
 
   const recent = hist.slice(-10);
   const bars = recent.map(function (h) {
-    const p = pct(h.correct, h.total);
-    return '<div class="bar-col"><span class="v">' + p + '</span>' +
-      '<div class="bar ' + (p >= 80 ? '' : p >= 50 ? 'mid' : 'low') + '" style="height:' + Math.max(p, 3) + '%"></div>' +
+    // 未完成紀錄用原定題數做分母（例如 5 題答啱 2 題 = 40%）；已完成紀錄 planned 等於 total
+    const p = pct(h.correct, h.planned);
+    const cls = h.incomplete ? 'inc' : p >= 80 ? '' : p >= 50 ? 'mid' : 'low';
+    return '<div class="bar-col"' + (h.incomplete ? ' title="未完成"' : '') + '><span class="v">' + (h.incomplete ? '未完' : p) + '</span>' +
+      '<div class="bar ' + cls + '" style="height:' + Math.max(p, 3) + '%"></div>' +
       '<small>' + shortDate(h.date) + '</small></div>';
   }).join('');
 
@@ -851,7 +1044,7 @@ function statsView(s) {
     '<div class="stack">' +
     '<div class="card"><div class="summary">' +
     '<div><div class="num">' + hist.length + '</div><div class="muted">默書次數</div></div>' +
-    '<div><div class="num">' + pct(sumC, sumT) + '%</div><div class="muted">平均正確率</div></div>' +
+    '<div><div class="num">' + avg + '</div><div class="muted">平均正確率</div></div>' +
     '<div><div class="num">' + Object.keys(s.bank).length + '</div><div class="muted">錯字怪獸</div></div></div></div>' +
     '<div class="card"><h3>最近 ' + recent.length + ' 次成績（%）</h3><div class="bars">' + bars + '</div></div>' +
     '<div class="card"><h3>最易錯嘅字（錯誤率）</h3>' +
@@ -882,10 +1075,8 @@ function historyView(s) {
   }
 
   const cards = groups.map(function (g) {
-    const c = g.items.reduce(function (a, h) { return a + h.correct; }, 0);
-    const t = g.items.reduce(function (a, h) { return a + h.total; }, 0);
     return '<div class="card"><div class="day-head"><div class="t"><b>' + dayLabel(g.date) + '</b>' +
-      '<div class="muted">' + g.items.length + ' 次 · 平均 ' + pct(c, t) + '%</div></div>' +
+      '<div class="muted">' + g.items.length + ' 次 · 平均 ' + avgText(g.items) + '</div></div>' +
       '<button class="btn ghost small" data-action="deleteDay" data-day="' + esc(g.key) + '">🗑 刪除呢日</button></div>' +
       g.items.map(recRow).join('') + '</div>';
   }).join('');
@@ -916,8 +1107,9 @@ function recordView(s) {
   return back +
     '<div class="card"><div class="day-head"><div class="t"><h2>' + esc(h.label) + '</h2>' +
     '<div class="muted">' + dayLabel(h.date) + ' ' + timeLabel(h.date) + '</div>' +
-    '<div class="muted">預設朗讀：' + (LANGS[h.lang] || LANGS.yue).label + '</div></div>' +
-    '<span class="rec-score' + (p >= 80 ? '' : p >= 50 ? ' mid' : ' low') + '">' + h.correct + '/' + h.total + '</span></div>' +
+    '<div class="muted">預設朗讀：' + (LANGS[h.lang] || LANGS.yue).label + '</div>' +
+    (h.incomplete ? '<div class="rec-tag">未完成：答咗 ' + h.total + ' / ' + h.planned + ' 題</div>' : '') + '</div>' +
+    '<span class="rec-score' + (h.incomplete ? ' inc' : p >= 80 ? '' : p >= 50 ? ' mid' : ' low') + '">' + h.correct + '/' + h.total + '</span></div>' +
     '<div style="margin-top:8px">' + list + '</div></div>' +
     '<button class="btn ghost block" style="margin-top:20px" data-action="deleteRecord" data-id="' + esc(h.id) + '">🗑 刪除呢次紀錄</button>';
 }
@@ -1051,7 +1243,9 @@ function finishQuiz(s) {
     label: q.label,
     source: q.source,
     lang: q.lang,
-    total: q.results.length,
+    total: q.results.length,   // 實際答咗嘅題數
+    planned: q.words.length,   // 原定題數
+    incomplete: q.results.length < q.words.length,
     correct: correct,
     wrong: wrong,
     results: q.results.map(function (r) { return { word: r.word, ok: r.ok, bad: r.bad }; })
@@ -1060,12 +1254,13 @@ function finishQuiz(s) {
   if (s.history.length > 200) s.history = s.history.slice(-200);
   saveDB();
   ui.result = {
-    total: rec.total, correct: correct, wrong: wrong, recordId: rec.id,
+    total: rec.total, planned: rec.planned, incomplete: rec.incomplete,
+    correct: correct, wrong: wrong, recordId: rec.id,
     added: q.added, removed: q.removed, hurt: q.hurt
   };
   go('result');
   const p = pct(correct, rec.total);
-  if (p >= 80) confetti(p === 100 ? 70 : 35);
+  if (p >= 80 && !rec.incomplete) confetti(p === 100 ? 70 : 35);
 }
 
 /* =====================================================
@@ -1233,9 +1428,9 @@ Object.assign(actions, {
     } else {
       const picked = s.lessons.filter(function (l) { return c.lessonIds.indexOf(l.id) !== -1; });
       if (!picked.length) { toast('請先揀最少一課'); return; }
-      const seen = {};
+      const seen = new Set();
       picked.forEach(function (l) {
-        l.words.forEach(function (w) { if (!seen[w]) { seen[w] = true; words.push(w); } });
+        l.words.forEach(function (w) { if (!seen.has(w)) { seen.add(w); words.push(w); } });
       });
       label = picked.length > 2
         ? picked[0].title + ' 等' + picked.length + '課'
@@ -1253,6 +1448,7 @@ Object.assign(actions, {
       source: c.source, label: label, words: words, idx: 0, results: [],
       added: [], removed: [], hurt: [], lang: p.lang, speed: p.speed, shown: 0
     };
+    preloadAnswerFont(words);
     prepareQuestion(false);  // 第一題跟住畫面入場動畫，唔使再滑入
     go('quiz');
     scheduleSpeak(FIRST_DELAY);
@@ -1318,6 +1514,12 @@ Object.assign(actions, {
     render();
   },
   quit: function () {
+    // 確認框打開期間暫停：唔朗讀、唔轉下一題
+    clearTimers();
+    currentUtterance = null;   // 被 cancel 嘅句子唔好觸發 onend（否則會提早解鎖「睇答案」）
+    stopSpeech();
+    setSpeaking(false);
+    setWaiting(false);
     confirmBox({
       icon: '🛑', title: '停止默書？',
       text: '已經答咗嘅題目會保留。', okText: '停止'
@@ -1325,6 +1527,12 @@ Object.assign(actions, {
       if (ui.view !== 'quiz') return;
       const s = me();
       if (ui.quiz.results.length) finishQuiz(s); else go('menu');
+    }, function () {
+      // 取消：由暫停嘅位置繼續
+      if (ui.view !== 'quiz') return;
+      const q = ui.quiz;
+      if (q.phase === 'listen') scheduleSpeak(NEXT_DELAY);
+      else if (q.phase === 'feedback') advance();
     });
   }
 });
@@ -1414,14 +1622,11 @@ document.addEventListener('change', function (e) {
   reader.onload = function () {
     let data;
     try {
-      data = JSON.parse(reader.result);
-      if (!data || !Array.isArray(data.students)) throw new Error('format');
-      data.students.forEach(function (st) {
-        if (!st.id || !st.name) throw new Error('format');
-        normaliseStudent(st);
-      });
+      let raw;
+      try { raw = JSON.parse(reader.result); } catch (err) { throw new Error('唔係有效嘅備份檔案'); }
+      data = normaliseDB(raw);   // 同載入 localStorage 行同一條校驗
     } catch (err) {
-      toast('檔案格式唔啱，還原失敗');
+      toast('還原失敗：' + err.message);   // 唔會寫入 localStorage
       return;
     }
     confirmBox({
@@ -1440,3 +1645,4 @@ document.addEventListener('change', function (e) {
 });
 
 render();
+if (loadNotice) toast(loadNotice, 6000);   // 載入時有資料讀唔到，提示用家
