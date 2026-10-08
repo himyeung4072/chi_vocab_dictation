@@ -337,7 +337,8 @@ function normaliseStudent(st) {
     lang: hasKey(LANGS, pf.lang) ? pf.lang : 'yue',
     speed: hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal',
     lastLessonIds: cleanIds(pf.lastLessonIds),   // 上次默書揀嘅課文
-    voiceURI: cleanVoiceURI(pf.voiceURI)         // 揀咗嘅朗讀聲音；空 = 自動
+    voiceURI: cleanVoiceURI(pf.voiceURI),        // 揀咗嘅朗讀聲音；空 = 自動
+    shortcuts: pf.shortcuts !== false            // 默書鍵盤快捷鍵；只有明確 false 先關，舊資料／舊備份冇此欄位當開
   };
   st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
   st.avatar = AVATARS.indexOf(st.avatar) !== -1 ? st.avatar : AVATARS[0];
@@ -848,7 +849,7 @@ function backupReminderHtml() {
     ? '仲未備份過資料。清除瀏覽器資料或者換機，紀錄就會消失。'
     : '已經 ' + d + ' 日冇備份資料喇。';
   return '<div class="notice reminder" role="region" aria-label="備份提醒"><p>💾 ' + msg + '</p>' +
-    '<div class="notice-actions"><button class="btn small" data-action="exportData">立即備份</button>' +
+    '<div class="notice-actions"><button class="btn small" data-action="exportData" data-key="reminder">立即備份</button>' +
     '<button class="link" data-action="snoozeBackup">之後再講</button></div></div>';
 }
 
@@ -1052,6 +1053,10 @@ function settingsView(s) {
   const group = function (key, inner) {
     return '<div class="toggle-select" data-group="' + key + '">' + inner + '</div>';
   };
+  const shortcutChip = function (on, label) {
+    const cur = p.shortcuts !== false;
+    return '<button class="chip' + (cur === on ? ' on' : '') + '" data-action="setShortcuts" data-val="' + (on ? '1' : '0') + '"' + pressed(cur === on) + '>' + label + '</button>';
+  };
   return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
     '<div class="card"><h2>我嘅資料</h2>' +
     '<label class="field-label" for="profileName" style="margin-top:0">名稱</label>' +
@@ -1066,6 +1071,10 @@ function settingsView(s) {
     '<p class="muted" style="margin-top:6px">默書時，每個詞語都可以隨時轉語言再聽。</p>' +
     '<span class="field-label">朗讀速度</span>' +
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
+    '<span class="field-label" id="shortcutsLabel">鍵盤快捷鍵</span>' +
+    '<div class="toggle-select" data-group="shortcuts" role="group" aria-labelledby="shortcutsLabel">' +
+    shortcutChip(true, '開') + shortcutChip(false, '關') + '</div>' +
+    '<p class="muted" style="margin-top:6px">默書時用空白、Enter、1、2 操作。語音輸入或讀屏軟件用家可以關閉，避免誤觸。</p>' +
     '<div id="voicePicker">' + voicePickerHtml(s) + '</div>' +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
     '<div id="voiceNotice">' + voiceNoticeHtml(p.lang) + '</div></div>' +
@@ -1164,6 +1173,12 @@ function langSwitch(q) {
     }).join('') + '</div>';
 }
 
+/* 默書鍵盤快捷鍵開關（WCAG 2.1.4）：prefs.shortcuts，冇同學資料或欄位缺失當開 */
+function shortcutsOn() {
+  const s = me();
+  return !(s && s.prefs && s.prefs.shortcuts === false);
+}
+
 function revealLabel(locked) {
   return locked ? '🎧 聽完先可以睇答案' : '寫好啦，睇答案 👀';
 }
@@ -1178,7 +1193,7 @@ function listenHtml(q) {
     (q.locked ? ' disabled' : '') + '>' + revealLabel(q.locked) + '</button>' +
     // 預留位置（min-height），鎖定提示出現／消失時版面唔會跳；內容由 syncLockHint 填
     '<p class="lock-hint" id="lockHint" role="status"></p>' +
-    '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>Enter = 睇答案</span></p>';
+    (shortcutsOn() ? '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>Enter = 睇答案</span></p>' : '');
 }
 
 /* 「睇答案」鎖定期間顯示「聽唔到？撳 🔊 再試」，解鎖即清走。
@@ -1208,7 +1223,7 @@ function answerHtml(q, word) {
     '<div class="two-btns">' +
     '<button class="btn green" data-action="mark" data-ok="1">✓ 啱咗</button>' +
     '<button class="btn red" data-action="mark" data-ok="0">✗ 錯咗</button></div>' +
-    '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>1 = 啱咗</span> <span>2 = 錯咗</span></p>';
+    (shortcutsOn() ? '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>1 = 啱咗</span> <span>2 = 錯咗</span></p>' : '');
 }
 
 function pickHtml(q, chars) {
@@ -1792,6 +1807,12 @@ Object.assign(actions, {
     selectInGroup(el);
     if (el.dataset.key === 'lang') updateVoiceNotice();
   },
+  setShortcuts: function (el) {
+    const s = me();
+    s.prefs.shortcuts = el.dataset.val === '1';
+    saveDB();
+    selectInGroup(el);
+  },
   toggleLesson: function (el) {
     const ids = ui.setup.lessonIds;
     const i = ids.indexOf(el.dataset.id);
@@ -1999,6 +2020,9 @@ document.addEventListener('click', function (e) {
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const fn = actions[el.dataset.action];
+  // 滑鼠／觸控撳「停止默書」✕：喺開確認框之前放走焦點，令框記低嘅 opener 係 BODY，
+  // 取消後唔會還原到 ✕（否則之後撳空白／Enter 會被 ✕ 攔截再開框）；鍵盤啟動（detail === 0）照舊還原
+  if (e.detail > 0 && el.dataset.action === 'quit') el.blur();
   if (fn) fn(el);
   // 滑鼠／觸控（detail > 0）撳完朗讀類掣就放走焦點，等 Enter／空白繼續行默書快捷鍵；
   // 鍵盤啟動嘅 click（detail === 0）唔處理，保持鍵盤同讀屏用家嘅焦點位置
@@ -2033,13 +2057,19 @@ document.addEventListener('keydown', function (e) {
    以下情況一律唔觸發：確認框打開（計時已暫停）、輸入框／文字區／下拉選單／可編輯內容、帶修飾鍵、長按重覆。
    焦點喺按鈕或連結時，空白同 Enter 交畀瀏覽器原生處理（否則一撳會觸發兩次） */
 document.addEventListener('keydown', function (e) {
-  if (e.defaultPrevented || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
   const q = ui.quiz;
   if (ui.view !== 'quiz' || !q) return;
+  if (!shortcutsOn()) return;   // 設定頁關咗快捷鍵（WCAG 2.1.4）：完全唔攔截任何鍵
   if (document.querySelector('.modal-back')) return;
   const t = e.target;
   if (t && t.closest && t.closest('input, textarea, select, [contenteditable]:not([contenteditable=false])')) return;
   const onControl = !!(t && t.closest && t.closest('button, a[href], [role=button]'));
+  // 長按重覆：唔再觸發動作；快捷鍵會處理嘅空白鍵（焦點唔喺掣）仍要擋住預設捲動
+  if (e.repeat) {
+    if (e.key === ' ' && !onControl) e.preventDefault();
+    return;
+  }
   if (e.key === ' ' || e.key === 'Enter') {
     if (onControl) return;
     e.preventDefault();   // 空白鍵預設會捲動頁面
