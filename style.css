@@ -50,6 +50,26 @@ h2 { font-size: 1.5rem; }
 h3 { font-size: 1.15rem; }
 
 .muted { color: var(--muted); font-size: .85rem; }
+
+/* 只畀讀屏軟件讀：視覺隱藏但保留喺無障礙樹（獨立 live region、畫面標題用） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* 換畫面後用程式將焦點放喺標題（tabindex=-1，唔係可操作元素），唔需要焦點框 */
+[tabindex="-1"]:focus { outline: none; }
+/* 鍵盤快捷鍵提示：只喺有滑鼠／實體鍵盤嘅裝置顯示，手機唔佔位 */
+.kbd-hint { display: none; margin-top: 10px; color: var(--muted); font-size: .8rem; text-align: center; }
+.kbd-hint span { display: inline-block; margin: 0 6px; white-space: nowrap; }
+@media (hover: hover) and (pointer: fine) { .kbd-hint { display: block; } }
 /* 設定頁底部字體署名：細字、置中；連結跟返 muted 顏色（頁面底色上 ≥ 4.6:1），靠底線分辨 */
 .credit { margin: 18px 0 4px; text-align: center; font-size: .8rem; }
 .credit a { color: inherit; text-decoration: underline; white-space: nowrap; }
@@ -791,3 +811,25 @@ input:focus, textarea:focus {
 .field-error { color: var(--red-d); font-weight: 700; margin-top: 8px; }
 .field-error[hidden] { display: none; }
 input[aria-invalid=true] { border-color: var(--red); }
+
+/* 首頁／主選單提示（備份提醒、加到主畫面）：溫和嘅黃色卡，字色用正文色（對比 ≥ 4.5:1） */
+.notice.reminder, .notice.a2hs { margin: 18px 0 0; font-size: .95rem; color: var(--text); }
+.notice p + p { margin-top: 4px; }
+.notice .how { color: var(--text); }
+.notice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
+.notice-actions .link { padding: 10px 4px; min-height: 44px; }
+.notice small { font-size: .85rem; line-height: 1.6; display: inline-block; margin-top: 4px; }
+
+/* 設定頁：朗讀聲音下拉選單 */
+.voice-select {
+  width: 100%;
+  font: inherit;
+  font-size: 1rem;
+  padding: 10px 14px;
+  min-height: 48px;
+  border: 3px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--text);
+}
+.voice-select:focus-visible { outline: 3px solid rgba(196, 78, 10, .4); outline-offset: 2px; border-color: var(--orange); }

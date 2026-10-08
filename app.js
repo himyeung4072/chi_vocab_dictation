@@ -28,11 +28,15 @@ const SLOW_RATE = 0.45;    // 「慢啲再讀」嘅速度
 const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
 const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
 const HISTORY_MAX = 200;   // 每位同學最多保留幾多次默書紀錄
+const DAY_MS = 86400000;
+const BACKUP_REMIND_DAYS = 14;   // 超過幾多日未備份，就喺首頁提示
+const A2HS_KEY = STORE_KEY + '_a2hs_dismissed';   // 「加到主畫面」提示已關閉（只係呢部機，唔跟備份走）
 
 const WAIT_HTML = '<span class="dots"><i></i><i></i><i></i></span> 預備緊，聽到就開始寫';
 
 const $app = document.getElementById('app');
 const $fx = document.getElementById('fx');
+const $live = document.getElementById('srLive');   // 獨立 live region（視覺隱藏），#app 本身唔係 live
 
 /* ---------- 資料儲存 ---------- */
 let loadNotice = '';   // 載入時有資料讀唔到：啟動畫好畫面後用 toast 通知
@@ -80,7 +84,7 @@ function backupRaw(raw) {
 function loadDB() {
   let raw = null;
   try { raw = localStorage.getItem(STORE_KEY); } catch (e) { /* 瀏覽器唔畀讀，當作冇資料 */ }
-  if (!raw) return { students: [], currentId: null };
+  if (!raw) return { students: [], currentId: null, lastBackupAt: null };
   let data = null;
   try { data = normaliseDB(JSON.parse(raw), true); } catch (e) { /* JSON 壞咗或者搵唔到同學資料 */ }
   if (!data || data.dropped) {
@@ -88,8 +92,8 @@ function loadDB() {
     loadNotice = (data ? '有 ' + data.dropped + ' 位同學嘅資料讀唔到，已經略過。' : '資料讀唔到，而家由空白開始。') +
       (saved ? '原始資料已經另外備份咗。' : '而且備份唔到原始資料，可能係儲存空間唔夠。');
   }
-  if (!data) return { students: [], currentId: null };
-  return { students: data.students, currentId: data.currentId };   // 唔好將 dropped 存入 db
+  if (!data) return { students: [], currentId: null, lastBackupAt: null };
+  return { students: data.students, currentId: data.currentId, lastBackupAt: data.lastBackupAt };   // 唔好將 dropped 存入 db
 }
 
 function saveDB() {
@@ -101,6 +105,16 @@ function saveDB() {
 }
 
 let db = loadDB();
+
+/* 申請持久儲存：減低瀏覽器喺空間緊張時自動清走資料嘅機會（有支援先做，結果唔影響使用） */
+(function requestPersist() {
+  try {
+    if (navigator.storage && typeof navigator.storage.persist === 'function') {
+      const r = navigator.storage.persist();
+      if (r && typeof r.catch === 'function') r.catch(function () { /* 俾拒絕或者出錯都冇所謂 */ });
+    }
+  } catch (e) { /* 唔支援就算 */ }
+})();
 let ui = {
   view: 'home',
   form: { name: '', grade: 1, avatar: AVATARS[0] },
@@ -110,7 +124,8 @@ let ui = {
   result: null,
   statTab: 'word',
   recordId: null,
-  recordBack: 'history'
+  recordBack: 'history',
+  backupSnoozed: false   // 撳咗「之後再講」：今次開 app 唔再提醒備份
 };
 
 /* ---------- 小工具 ---------- */
@@ -121,6 +136,9 @@ function esc(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+
+/* 切換掣嘅 aria-pressed 屬性字串（on 係目前有冇揀中） */
+function pressed(on) { return ' aria-pressed="' + (on ? 'true' : 'false') + '"'; }
 
 function me() {
   return db.students.find(function (s) { return s.id === db.currentId; }) || null;
@@ -291,6 +309,20 @@ function cleanIds(list) {
   return out;
 }
 
+/* db.lastBackupAt：只接受可解析嘅日期字串，統一轉成 ISO；解析唔到、或者比而家遲過一日以上（時鐘錯亂，
+   否則提醒會永遠唔出）就當作冇備份過（null） */
+function cleanTimestamp(x) {
+  if (typeof x !== 'string' || x.length > 40) return null;
+  const t = Date.parse(x);
+  if (!Number.isFinite(t) || t > Date.now() + DAY_MS) return null;
+  return new Date(t).toISOString();
+}
+
+/* 聲音 id（prefs.voiceURI）：只接受非空字串，最多 200 字元，否則當作「自動」（空字串） */
+function cleanVoiceURI(x) {
+  return typeof x === 'string' && x.length > 0 && x.length <= 200 ? x : '';
+}
+
 function normaliseStudent(st) {
   st.id = String(st.id);
   st.name = String(st.name);
@@ -304,7 +336,8 @@ function normaliseStudent(st) {
     order: pf.order === 'random' ? 'random' : 'seq',
     lang: hasKey(LANGS, pf.lang) ? pf.lang : 'yue',
     speed: hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal',
-    lastLessonIds: cleanIds(pf.lastLessonIds)   // 上次默書揀嘅課文
+    lastLessonIds: cleanIds(pf.lastLessonIds),   // 上次默書揀嘅課文
+    voiceURI: cleanVoiceURI(pf.voiceURI)         // 揀咗嘅朗讀聲音；空 = 自動
   };
   st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
   st.avatar = AVATARS.indexOf(st.avatar) !== -1 ? st.avatar : AVATARS[0];
@@ -328,7 +361,12 @@ function normaliseDB(data, lenient) {
     try { students.push(normaliseStudent(st)); } catch (e) { dropped += 1; }
   });
   const ids = students.map(function (st) { return st.id; });
-  return { students: students, currentId: ids.indexOf(data.currentId) !== -1 ? data.currentId : null, dropped: dropped };
+  return {
+    students: students,
+    currentId: ids.indexOf(data.currentId) !== -1 ? data.currentId : null,
+    lastBackupAt: cleanTimestamp(data.lastBackupAt),   // 舊資料、舊備份冇此欄位 → null
+    dropped: dropped
+  };
 }
 
 function newStudent(name, grade, avatar) {
@@ -374,15 +412,35 @@ if ('speechSynthesis' in window) {
   });
 }
 
-function pickVoice(langKey) {
+/* 符合朗讀語言嘅聲音，按優先次序排好（自動揀聲音就係攞第一個）。
+   廣東話：zh-HK／yue；普通話：zh-CN → cmn → zh-TW → 其他 zh（唔包括 zh-HK） */
+function voicesFor(langKey) {
   const norm = function (v) { return (v.lang || '').replace('_', '-'); };
-  if (langKey === 'yue') {
-    return voices.find(function (v) { return /^(zh-HK|yue)/i.test(norm(v)); }) || null;
+  const tiers = langKey === 'yue'
+    ? [/^(zh-HK|yue)/i]
+    : [/^zh-CN/i, /^cmn/i, /^zh-TW/i, null];
+  const out = [];
+  tiers.forEach(function (re) {
+    voices.forEach(function (v) {
+      const ok = re ? re.test(norm(v)) : (/^zh/i.test(norm(v)) && !/^zh-HK/i.test(norm(v)));
+      if (ok && out.indexOf(v) === -1) out.push(v);
+    });
+  });
+  return out;
+}
+
+function voiceId(v) { return v.voiceURI || v.name || ''; }
+
+/* 先用同學揀咗嘅聲音（prefs.voiceURI，而且要符合今次嘅朗讀語言）；搵唔到就用自動揀嘅 */
+function pickVoice(langKey) {
+  const list = voicesFor(langKey);
+  const s = me();
+  const uri = s && s.prefs ? s.prefs.voiceURI : '';
+  if (uri) {
+    const chosen = list.find(function (v) { return voiceId(v) === uri; });
+    if (chosen) return chosen;
   }
-  return voices.find(function (v) { return /^zh-CN/i.test(norm(v)); }) ||
-    voices.find(function (v) { return /^cmn/i.test(norm(v)); }) ||
-    voices.find(function (v) { return /^zh-TW/i.test(norm(v)); }) ||
-    voices.find(function (v) { return /^zh/i.test(norm(v)) && !/^zh-HK/i.test(norm(v)); }) || null;
+  return list[0] || null;
 }
 
 /* hooks: { onstart, onend }，只有最新一句會觸發，避免被 cancel 嘅舊句影響 */
@@ -424,18 +482,64 @@ function voiceWarning(langKey) {
   }
   if (!pickVoice(langKey)) {
     return langKey === 'yue'
-      ? '呢部機暫時搵唔到廣東話語音。可以試吓按「試聽」，或者請家長喺系統設定安裝廣東話語音，又或者轉用普通話。'
-      : '呢部機暫時搵唔到普通話語音，請家長喺系統設定安裝語音。';
+      ? '呢部機暫時搵唔到廣東話語音。可以試吓按「試聽」，或者請家長安裝廣東話語音（方法見下面），又或者轉用普通話。'
+      : '呢部機暫時搵唔到普通話語音，請家長安裝語音（方法見下面）。';
   }
   return '';
 }
 
+/* 裝置類型：iOS（包括偽裝成 Mac 嘅 iPad）、Android，其他當桌面 */
+function devicePlatform() {
+  const ua = navigator.userAgent || '';
+  if (/iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
+  if (/Android/i.test(ua)) return 'android';
+  return 'desktop';
+}
+
+/* 搵唔到語音時嘅安裝教學（各品牌選單名稱可能略有不同） */
+function voiceHelp(langKey) {
+  const lang = langKey === 'yue' ? '粵語（香港）' : '普通話';
+  const p = devicePlatform();
+  if (p === 'ios') {
+    return 'iPhone／iPad：打開「設定」›「輔助使用」›「語音內容」›「聲音」，揀' + lang + '，再下載語音。';
+  }
+  if (p === 'android') {
+    return 'Android：打開系統設定，搵「文字轉語音」（可能放喺「語言和輸入」入面），揀「Google 文字轉語音」，再安裝' + lang + '語言包。';
+  }
+  return '請家長喺電腦或手機嘅系統設定安裝' + lang + '語音（iPhone／iPad：設定 › 輔助使用 › 語音內容；Android：文字轉語音設定），安裝後重新整理頁面。';
+}
+
+/* 設定頁嘅語音提示：警告原因 + 安裝教學（支援朗讀但冇聲音時先有教學） */
+function voiceNoticeHtml(langKey) {
+  const w = voiceWarning(langKey);
+  if (!w) return '';
+  const help = 'speechSynthesis' in window ? '<br><small>' + esc(voiceHelp(langKey)) + '</small>' : '';
+  return '<div class="notice">⚠️ ' + esc(w) + help + '</div>';
+}
+
+/* 聲音選單：自動 + 符合目前朗讀語言嘅聲音；冇聲音可揀就唔畫選單 */
+function voicePickerHtml(s) {
+  if (!('speechSynthesis' in window)) return '';
+  refreshVoices();
+  const list = voicesFor(s.prefs.lang);
+  if (!list.length) return '';
+  const cur = s.prefs.voiceURI;
+  const opts = ['<option value=""' + (cur ? '' : ' selected') + '>自動（建議）</option>'].concat(list.map(function (v) {
+    const id = voiceId(v);
+    return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(v.name + '（' + v.lang + '）') + '</option>';
+  }));
+  return '<label class="field-label" for="voiceSelect">朗讀聲音</label>' +
+    '<select id="voiceSelect" class="voice-select">' + opts.join('') + '</select>';
+}
+
 function updateVoiceNotice() {
-  const box = document.getElementById('voiceNotice');
   const s = me();
-  if (!box || !s) return;
-  const w = voiceWarning(s.prefs.lang);
-  box.innerHTML = w ? '<div class="notice">⚠️ ' + esc(w) + '</div>' : '';
+  if (!s) return;
+  const box = document.getElementById('voiceNotice');
+  if (box) box.innerHTML = voiceNoticeHtml(s.prefs.lang);
+  // 聲音清單隨語言改變、或者系統稍後先載入聲音（voiceschanged）而更新；用家正喺度揀嗰陣唔好打斷
+  const pick = document.getElementById('voicePicker');
+  if (pick && document.activeElement !== document.getElementById('voiceSelect')) pick.innerHTML = voicePickerHtml(s);
 }
 
 /* ---------- 特效 ---------- */
@@ -443,10 +547,21 @@ function updateVoiceNotice() {
 function toast(msg, ms) {
   const el = document.createElement('div');
   el.className = 'toast';
-  el.textContent = msg;
+  el.setAttribute('role', 'status');
   if (ms) el.style.animationDuration = (ms - 100) + 'ms';
+  // 先插入空嘅 live region（要留喺無障礙樹，唔可以 visibility:hidden），約 50ms 後先填字，讀屏軟件先會公佈
   document.body.appendChild(el);
+  setTimeout(function () { el.textContent = msg; }, 50);
   setTimeout(function () { el.remove(); }, ms || 2500);
+}
+
+/* 公佈狀態畀讀屏軟件（第 3 / 12 題、答啱咗）。先清空再延遲填字，同一句連續出現都會再讀 */
+let announceTimer = null;
+function announce(msg) {
+  if (!$live) return;
+  clearTimeout(announceTimer);
+  $live.textContent = '';
+  announceTimer = setTimeout(function () { $live.textContent = msg; }, 60);
 }
 
 function confetti(count) {
@@ -483,6 +598,7 @@ document.addEventListener('pointerdown', function (e) {
    opts: { icon, title, text, okText, danger }；撳確定先會執行 onOk
    onCancel（可選）：撳取消、撳背景或者 Esc 關閉時執行 */
 function confirmBox(opts, onOk, onCancel) {
+  const opener = document.activeElement;   // 開框前嘅焦點，關閉時還原
   const back = document.createElement('div');
   back.className = 'modal-back';
   back.innerHTML =
@@ -493,10 +609,30 @@ function confirmBox(opts, onOk, onCancel) {
     '<button class="btn ' + (opts.danger ? 'red' : 'green') + '" data-m="yes">' + esc(opts.okText || '確定') + '</button>' +
     '</div></div>';
 
-  function onKey(e) { if (e.key === 'Escape') dismiss(); }
+  /* Tab／Shift+Tab 只喺框內兩粒按鈕之間循環；焦點跑咗出框（例如撳咗空白位）就拉返入框 */
+  function trapTab(e) {
+    const btns = back.querySelectorAll('button');
+    if (!btns.length) return;
+    const first = btns[0];
+    const last = btns[btns.length - 1];
+    const cur = document.activeElement;
+    if (!back.contains(cur)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); }
+    else if (e.shiftKey && cur === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && cur === last) { e.preventDefault(); first.focus(); }
+  }
+  function onKey(e) {
+    // 按住 Enter／空白會連發 keydown：忽略，避免關框後焦點還原到開框掣，再被重覆鍵打開
+    if (e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); return; }
+    if (e.key === 'Escape') dismiss();
+    else if (e.key === 'Tab') trapTab(e);
+  }
   function close() {
     document.removeEventListener('keydown', onKey);
     back.remove();
+    // 還原焦點；原本嗰粒掣已經唔喺頁面（畫面重畫過）就唔處理，由 render 決定焦點
+    if (opener && opener !== document.body && document.contains(opener) && typeof opener.focus === 'function') {
+      opener.focus({ preventScroll: true });
+    }
   }
   function dismiss() {
     close();
@@ -594,8 +730,55 @@ function removeRecords(s, ids) {
    畫面
    ===================================================== */
 let lastView = null;
+let lastScreen = null;   // 上一次畫咗邊個「畫面」（默書按題目＋階段分），用嚟決定要唔要搬焦點
+
+/* 「畫面」身份：換咗先搬焦點；同一畫面內重畫（例如切換選項）唔搶焦點 */
+function screenKey() {
+  const q = ui.quiz;
+  return ui.view === 'quiz' && q ? 'quiz:' + q.idx + ':' + q.phase : ui.view;
+}
+
+function focusEl(t) {
+  if (!t.matches('button, a[href], input, textarea, select, [tabindex]')) t.setAttribute('tabindex', '-1');
+  t.focus({ preventScroll: true });
+}
+
+/* 新畫面嘅焦點位：有 data-focus 用佢（默書嘅提示句），否則第一個標題；再冇就「← 返回」 */
+function focusMain() {
+  const t = $app.querySelector('[data-focus]') || $app.querySelector('h1, h2') || $app.querySelector('.back');
+  if (t) focusEl(t);
+}
+
+/* 重畫前記低焦點元素嘅特徵，重畫後喺同一畫面搵返同一粒（按鈕靠 data-*，輸入框靠 id） */
+function focusSig(el) {
+  if (!el || el === document.body || !$app.contains(el)) return null;
+  const d = el.dataset;
+  return { id: el.id, action: d.action, key: d.key, val: d.val, did: d.id, word: d.word, i: d.i, day: d.day, ok: d.ok };
+}
+
+function findBySig(sig) {
+  if (sig.id) return document.getElementById(sig.id);
+  if (!sig.action) return null;
+  const list = $app.querySelectorAll('[data-action]');
+  for (let n = 0; n < list.length; n++) {
+    const d = list[n].dataset;
+    if (d.action === sig.action && d.key === sig.key && d.val === sig.val && d.id === sig.did &&
+      d.word === sig.word && d.i === sig.i && d.day === sig.day && d.ok === sig.ok) return list[n];
+  }
+  return null;
+}
+
+/* 默書畫面出新題目／新階段時，用獨立 live region 公佈狀態（唔重讀整個畫面） */
+function announceScreen() {
+  const q = ui.quiz;
+  if (ui.view !== 'quiz' || !q) return;
+  if (q.phase === 'listen') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 題');
+  else if (q.phase === 'answer') announce(q.words[q.idx]);   // 焦點喺「答案係」，跟住讀出答案
+  else if (q.phase === 'feedback') announce(q.fb.ok ? '答啱咗' : '答錯咗');
+}
 
 function render() {
+  const sig = focusSig(document.activeElement);
   const s = me();
   if (ui.view !== 'home' && ui.view !== 'add' && !s) ui.view = 'home';
   const views = {
@@ -610,6 +793,97 @@ function render() {
     (views[ui.view] || homeView)(s) + '</div>';
   if (ui.view === 'quiz') { afterQuizRender(); syncLockHint(); }
   if (ui.view === 'setup') refreshCount();
+
+  // 焦點管理：換畫面 → 搬去新畫面標題；同一畫面重畫 → 還原到同一粒掣（搵唔到先去標題）。
+  // 第一次畫（開 app）同確認框打開期間唔搬
+  const screen = screenKey();
+  const changed = screen !== lastScreen;
+  const firstPaint = lastScreen === null;
+  lastScreen = screen;
+  if (firstPaint || document.querySelector('.modal-back')) return;
+  if (changed) {
+    focusMain();
+    announceScreen();
+  } else if (sig) {
+    const t = findBySig(sig);
+    if (t) focusEl(t); else focusMain();
+  }
+}
+
+/* ---------- 備份提醒 ---------- */
+/* 距離上次備份幾多日（滿 24 小時先加一）；未備份過返回 null；時鐘倒退（未來時間）當 0 日 */
+function backupAgeDays(now) {
+  if (!db.lastBackupAt) return null;
+  const t = Date.parse(db.lastBackupAt);
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.floor(((now == null ? Date.now() : now) - t) / DAY_MS));
+}
+
+/* 有冇值得備份嘅資料：有課文、默書紀錄或者錯字怪獸；剛登記、仲未用過嘅同學唔算 */
+function hasUserData() {
+  return db.students.some(function (s) {
+    return s.lessons.length > 0 || s.history.length > 0 || Object.keys(s.bank).length > 0;
+  });
+}
+
+/* 超過 BACKUP_REMIND_DAYS 日未備份（或者從未備份但已有資料）就要提醒；
+   「之後再講」只係今次開 app 唔再出（ui.backupSnoozed，唔存起） */
+function backupDue(now) {
+  if (ui.backupSnoozed || !hasUserData()) return false;
+  const t = db.lastBackupAt ? Date.parse(db.lastBackupAt) : NaN;
+  if (!Number.isFinite(t)) return true;
+  return (now == null ? Date.now() : now) - t > BACKUP_REMIND_DAYS * DAY_MS;
+}
+
+function backupAgeText() {
+  const d = backupAgeDays();
+  if (d === null) return '未備份過';
+  return d === 0 ? '今日' : d + ' 日前';
+}
+
+function backupReminderHtml() {
+  if (!backupDue()) return '';
+  const d = backupAgeDays();
+  const msg = d === null
+    ? '仲未備份過資料。清除瀏覽器資料或者換機，紀錄就會消失。'
+    : '已經 ' + d + ' 日冇備份資料喇。';
+  return '<div class="notice reminder" role="region" aria-label="備份提醒"><p>💾 ' + msg + '</p>' +
+    '<div class="notice-actions"><button class="btn small" data-action="exportData">立即備份</button>' +
+    '<button class="link" data-action="snoozeBackup">之後再講</button></div></div>';
+}
+
+/* 設定頁「資料備份」卡片：上次備份幾日前 + 立即備份 */
+function backupCardHtml() {
+  return '<div class="card" style="margin-top:16px"><h2>資料備份</h2>' +
+    '<p id="backupAge">上次備份：' + backupAgeText() + '</p>' +
+    '<p class="muted" style="margin-top:6px">資料只存喺呢部機嘅瀏覽器入面，建議定期備份。</p>' +
+    '<button class="btn blue small" style="margin-top:12px" data-action="exportData">備份資料</button></div>';
+}
+
+/* ---------- 加到主畫面提示 ---------- */
+function isStandalone() {
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+}
+
+function a2hsDismissed() {
+  try { return localStorage.getItem(A2HS_KEY) === '1'; } catch (e) { return false; }
+}
+
+/* 只喺手機／平板、經 http(s) 開、未加到主畫面、未關閉過先顯示 */
+function a2hsTipHtml() {
+  const plat = devicePlatform();
+  if (plat === 'desktop' || !/^https?:$/.test(location.protocol) || isStandalone() || a2hsDismissed()) return '';
+  const how = plat === 'ios'
+    ? '用 Safari 打開，撳瀏覽器嘅「分享」掣（□ 加向上箭咀），再揀「加入主畫面」。'
+    : '撳瀏覽器右上角嘅選單 ⋮，再揀「加到主畫面」或者「安裝應用程式」。';
+  return '<div class="notice a2hs" role="region" aria-label="加到主畫面"><p>📲 加到主畫面，好似 App 咁一撳就開，斷網都用到。</p>' +
+    '<p class="how">' + how + '</p>' +
+    '<div class="notice-actions"><button class="link" data-action="dismissA2hs">知道喇，唔再提示</button></div></div>';
+}
+
+/* 首頁同主選單共用：單人使用時直接入主選單，所以兩個畫面都要有 */
+function homeNoticesHtml() {
+  return backupReminderHtml() + a2hsTipHtml();
 }
 
 function homeView() {
@@ -622,6 +896,7 @@ function homeView() {
     '<p>' + (db.students.length ? '撳返自己嘅頭像啦' : '先登記一位同學啦') + '</p></header>' +
     '<div class="grid">' + cards +
     '<button class="student-card add" data-action="goAdd"><span class="av">➕</span><b>新同學</b></button></div>' +
+    homeNoticesHtml() +
     '<div class="footer-links">' +
     '<button class="link" data-action="exportData">備份資料</button>' +
     '<button class="link" data-action="importData">還原資料</button></div>' +
@@ -631,14 +906,14 @@ function homeView() {
 /* 公仔選擇 chips（新增同學同設定頁共用）；action 係撳落去執行嘅 data-action */
 function avatarChips(current, action) {
   return AVATARS.map(function (a) {
-    return '<button class="chip avatar' + (current === a ? ' on' : '') + '" data-action="' + action + '" data-key="avatar" data-val="' + a + '" aria-label="公仔 ' + a + '">' + a + '</button>';
+    return '<button class="chip avatar' + (current === a ? ' on' : '') + '" data-action="' + action + '" data-key="avatar" data-val="' + a + '" aria-label="公仔 ' + a + '"' + pressed(current === a) + '>' + a + '</button>';
   }).join('');
 }
 
 /* 年級選擇 chips（新增同學同設定頁共用）；action 係撳落去執行嘅 data-action */
 function gradeChips(current, action) {
   return GRADES.map(function (g, i) {
-    return '<button class="chip' + (current === i + 1 ? ' on' : '') + '" data-action="' + action + '" data-key="grade" data-val="' + (i + 1) + '">' + g + '</button>';
+    return '<button class="chip' + (current === i + 1 ? ' on' : '') + '" data-action="' + action + '" data-key="grade" data-val="' + (i + 1) + '"' + pressed(current === i + 1) + '>' + g + '</button>';
   }).join('');
 }
 
@@ -667,7 +942,7 @@ function menuView(s) {
     (bankCount ? '<span class="badge">' + bankCount + '</span>' : '') + '</button>' +
     '<button class="menu-btn g" data-action="goLessons"><span class="ico">📚</span>我的詞庫</button>' +
     '<button class="menu-btn b" data-action="goStats"><span class="ico">📊</span>我的成績</button>' +
-    '</div>' +
+    '</div>' + homeNoticesHtml() +
     '<div class="footer-links"><button class="link danger" data-action="deleteStudent">刪除呢位同學</button></div>';
 }
 
@@ -723,7 +998,7 @@ function setupView(s) {
   if (!ui.setup) initSetup(s, 'lessons');
   const c = ui.setup;
   const chip = function (key, val, label) {
-    return '<button class="chip' + (c[key] === val ? ' on' : '') + '" data-action="setOpt" data-key="' + key + '" data-val="' + val + '">' + label + '</button>';
+    return '<button class="chip' + (c[key] === val ? ' on' : '') + '" data-action="setOpt" data-key="' + key + '" data-val="' + val + '"' + pressed(c[key] === val) + '>' + label + '</button>';
   };
   const bankWords = Object.keys(s.bank);
 
@@ -744,7 +1019,7 @@ function setupView(s) {
   } else {
     sourceBlock = '<div class="chips" data-group="lessons">' + s.lessons.map(function (l) {
       const on = c.lessonIds.indexOf(l.id) !== -1;
-      return '<button class="chip' + (on ? ' on' : '') + '" data-action="toggleLesson" data-id="' + esc(l.id) + '">' +
+      return '<button class="chip' + (on ? ' on' : '') + '" data-action="toggleLesson" data-id="' + esc(l.id) + '"' + pressed(on) + '>' +
         esc(l.title) + ' <small>(' + l.words.length + ')</small></button>';
     }).join('') + '</div>' +
       '<button class="link" data-action="allLessons">全選 / 取消全選</button>' +
@@ -772,12 +1047,11 @@ function setupView(s) {
 function settingsView(s) {
   const p = s.prefs;
   const chip = function (key, val, label) {
-    return '<button class="chip' + (p[key] === val ? ' on' : '') + '" data-action="setPref" data-key="' + key + '" data-val="' + val + '">' + label + '</button>';
+    return '<button class="chip' + (p[key] === val ? ' on' : '') + '" data-action="setPref" data-key="' + key + '" data-val="' + val + '"' + pressed(p[key] === val) + '>' + label + '</button>';
   };
   const group = function (key, inner) {
     return '<div class="toggle-select" data-group="' + key + '">' + inner + '</div>';
   };
-  const warn = voiceWarning(p.lang);
   return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
     '<div class="card"><h2>我嘅資料</h2>' +
     '<label class="field-label" for="profileName" style="margin-top:0">名稱</label>' +
@@ -792,8 +1066,10 @@ function settingsView(s) {
     '<p class="muted" style="margin-top:6px">默書時，每個詞語都可以隨時轉語言再聽。</p>' +
     '<span class="field-label">朗讀速度</span>' +
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
+    '<div id="voicePicker">' + voicePickerHtml(s) + '</div>' +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
-    '<div id="voiceNotice">' + (warn ? '<div class="notice">⚠️ ' + esc(warn) + '</div>' : '') + '</div></div>' +
+    '<div id="voiceNotice">' + voiceNoticeHtml(p.lang) + '</div></div>' +
+    backupCardHtml() +
     // 字體署名（CC BY 4.0）：靜態文字，唔涉及資料
     '<p class="muted credit">答案字型：<a href="https://freehkfonts.opensource.hk/download/" target="_blank" rel="noopener">自由香港楷書</a> (Free HK Kai)，' +
     '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>；改編自全字庫正楷體。</p>';
@@ -884,7 +1160,7 @@ function preloadAnswerFont(words) {
 function langSwitch(q) {
   return '<div class="lang-switch" role="group" aria-label="朗讀語言">' +
     ['cmn', 'yue'].map(function (k) {
-      return '<button class="lang-btn' + (q.curLang === k ? ' on' : '') + '" data-action="setWordLang" data-val="' + k + '">' + LANGS[k].label + '</button>';
+      return '<button class="lang-btn' + (q.curLang === k ? ' on' : '') + '" data-action="setWordLang" data-val="' + k + '"' + pressed(q.curLang === k) + '>' + LANGS[k].label + '</button>';
     }).join('') + '</div>';
 }
 
@@ -893,7 +1169,7 @@ function revealLabel(locked) {
 }
 
 function listenHtml(q) {
-  return '<p class="prompt">聽下，寫喺紙上面 ✏️</p>' +
+  return '<p class="prompt" data-focus>聽下，寫喺紙上面 ✏️</p>' +
     '<button class="speaker" id="speakerBtn" data-action="speak" aria-label="再聽一次">🔊</button>' +
     '<div class="status" id="status">' + (q.waiting ? WAIT_HTML : '') + '</div>' +
     langSwitch(q) +
@@ -901,7 +1177,8 @@ function listenHtml(q) {
     '<button class="btn green block" id="revealBtn" style="margin-top:22px;min-height:64px;font-size:1.25rem" data-action="reveal"' +
     (q.locked ? ' disabled' : '') + '>' + revealLabel(q.locked) + '</button>' +
     // 預留位置（min-height），鎖定提示出現／消失時版面唔會跳；內容由 syncLockHint 填
-    '<p class="lock-hint" id="lockHint" role="status"></p>';
+    '<p class="lock-hint" id="lockHint" role="status"></p>' +
+    '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>Enter = 睇答案</span></p>';
 }
 
 /* 「睇答案」鎖定期間顯示「聽唔到？撳 🔊 再試」，解鎖即清走。
@@ -923,22 +1200,23 @@ function syncLockHint() {
 function answerHtml(q, word) {
   // 字號由 CSS 按答案框實際闊度計（--n = 字數），見 style.css .answer-box
   const n = Math.max(Array.from(word).length, 1);
-  return '<p class="prompt">答案係</p>' +
+  return '<p class="prompt" data-focus>答案係</p>' +
     '<div class="answer-wrap"><div class="answer-box" style="--n:' + n + '">' + esc(word) + '</div></div>' +
     langSwitch(q) +
     '<div><button class="btn ghost small" data-action="speak">🔊 再聽一次</button></div>' +
     '<p class="prompt" style="margin-top:18px">你寫啱咗嗎？</p>' +
     '<div class="two-btns">' +
     '<button class="btn green" data-action="mark" data-ok="1">✓ 啱咗</button>' +
-    '<button class="btn red" data-action="mark" data-ok="0">✗ 錯咗</button></div>';
+    '<button class="btn red" data-action="mark" data-ok="0">✗ 錯咗</button></div>' +
+    '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>1 = 啱咗</span> <span>2 = 錯咗</span></p>';
 }
 
 function pickHtml(q, chars) {
   const sz = chars.length <= 4 ? 'min(20vw,96px)' : 'min(15vw,72px)';
   const tiles = chars.map(function (c, i) {
-    return '<button class="tile' + (q.pickBad.indexOf(i) !== -1 ? ' bad' : '') + '" data-action="togglePick" data-i="' + i + '">' + esc(c) + '</button>';
+    return '<button class="tile' + (q.pickBad.indexOf(i) !== -1 ? ' bad' : '') + '" data-action="togglePick" data-i="' + i + '"' + pressed(q.pickBad.indexOf(i) !== -1) + '>' + esc(c) + '</button>';
   }).join('');
-  return '<p class="prompt">邊個字寫錯咗？</p>' +
+  return '<p class="prompt" data-focus>邊個字寫錯咗？</p>' +
     '<p class="muted" style="margin-top:4px">撳返寫錯咗嘅字，唔肯定可以直接撳確定</p>' +
     '<div class="tiles" style="--sz:' + sz + '">' + tiles + '</div>' +
     '<button class="btn block" data-action="confirmPick">確定 ✓</button>' +
@@ -1031,7 +1309,10 @@ function resultView(s) {
   }
   if (r.removed.length) extra += '<div class="result-section"><h3>🎉 打敗咗怪獸（已經記得）</h3>' + wordChips(r.removed) + '</div>';
 
-  return '<div class="card result-card"><div class="mascot">' + mascot + '</div>' + head +
+  const srTitle = r.incomplete ? '默書未完成：答咗 ' + r.total + ' / ' + r.planned + ' 題' :
+    '默書完成：答啱 ' + r.correct + ' / ' + r.total + ' 題';
+  return '<h2 class="sr-only">' + srTitle + '</h2>' +
+    '<div class="card result-card"><div class="mascot">' + mascot + '</div>' + head +
     '<p>' + msg + '</p>' + extra + '</div>' +
     '<div class="stack" style="margin-top:20px">' +
     '<button class="btn block" data-action="again">再默一次 🔁</button>' +
@@ -1110,10 +1391,11 @@ function statsView(s) {
   }).join('') : '<div class="empty"><span class="em">🌟</span>' + emptyMsg + '</div>';
 
   const tab = function (key, label) {
-    return '<button class="chip' + (ui.statTab === key ? ' on' : '') + '" data-action="setStatTab" data-val="' + key + '">' + label + '</button>';
+    return '<button class="chip' + (ui.statTab === key ? ' on' : '') + '" data-action="setStatTab" data-val="' + key + '"' + pressed(ui.statTab === key) + '>' + label + '</button>';
   };
 
   return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
+    '<h2 class="sr-only">我的成績</h2>' +
     '<div class="stack">' +
     '<div class="card"><div class="summary">' +
     '<div><div class="num">' + hist.length + '</div><div class="muted">默書次數</div></div>' +
@@ -1346,8 +1628,12 @@ const actions = {};
 
 /* 同一組選項入面，只更新 class，唔重新畫整個畫面（避免閃爍） */
 function selectInGroup(el) {
-  Array.prototype.forEach.call(el.parentElement.children, function (x) { x.classList.remove('on'); });
+  Array.prototype.forEach.call(el.parentElement.children, function (x) {
+    x.classList.remove('on');
+    if (x.hasAttribute('aria-pressed')) x.setAttribute('aria-pressed', 'false');
+  });
   el.classList.add('on', 'pop');
+  el.setAttribute('aria-pressed', 'true');
   setTimeout(function () { el.classList.remove('pop'); }, 450);
 }
 
@@ -1382,16 +1668,34 @@ Object.assign(actions, {
     });
   },
 
+  /* 備份：先記低 lastBackupAt 再匯出（備份檔入面嘅時間就係今次）。
+     瀏覽器冇辦法確認檔案真係存咗，所以以「已觸發下載」計；匯出途中出錯就還原舊時間，唔會誤報已備份 */
   exportData: function () {
-    const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
+    const prev = db.lastBackupAt;
     const d = new Date();
-    a.href = URL.createObjectURL(blob);
-    a.download = 'chi-vocab-backup-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.json';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    try {
+      db.lastBackupAt = d.toISOString();
+      const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'chi-vocab-backup-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+    } catch (e) {
+      db.lastBackupAt = prev;
+      toast('備份失敗，請再試一次');
+      return;
+    }
+    saveDB();
+    toast('已備份 ✓');
+    render();   // 更新提醒同「上次備份」
+  },
+  snoozeBackup: function () { ui.backupSnoozed = true; render(); },
+  dismissA2hs: function () {
+    try { localStorage.setItem(A2HS_KEY, '1'); } catch (e) { /* 儲存唔到：今次關閉，下次再提示 */ }
+    render();
   },
   importData: function () { document.getElementById('importFile').click(); },
 
@@ -1492,7 +1796,7 @@ Object.assign(actions, {
     const ids = ui.setup.lessonIds;
     const i = ids.indexOf(el.dataset.id);
     if (i === -1) ids.push(el.dataset.id); else ids.splice(i, 1);
-    el.classList.toggle('on');
+    el.setAttribute('aria-pressed', String(el.classList.toggle('on')));
     el.classList.add('pop');
     setTimeout(function () { el.classList.remove('pop'); }, 450);
     refreshCount();
@@ -1503,6 +1807,7 @@ Object.assign(actions, {
     ui.setup.lessonIds = all ? s.lessons.map(function (l) { return l.id; }) : [];
     document.querySelectorAll('[data-action=toggleLesson]').forEach(function (b) {
       b.classList.toggle('on', all);
+      b.setAttribute('aria-pressed', String(all));
     });
     refreshCount();
   },
@@ -1560,6 +1865,17 @@ Object.assign(actions, {
 /* ---------- 默書中 ---------- */
 function canHear() { return ui.quiz && (ui.quiz.phase === 'listen' || ui.quiz.phase === 'answer'); }
 
+/* 自評：啱 → 直接記錄；錯 → 單字詞語直接記錄，多字詞語問邊個字寫錯。撳掣同鍵盤快捷鍵（1／2）共用 */
+function markAnswer(ok) {
+  const q = ui.quiz;
+  if (!q || q.phase !== 'answer') return;   // 只有「答案」階段先生效，回饋動畫期間重覆撳唔會再記錄
+  if (ok) { commitAnswer(true, []); return; }
+  if (Array.from(q.words[q.idx]).length <= 1) { commitAnswer(false, [0]); return; }
+  q.pickBad = [];
+  q.phase = 'pick';   // 多過一個字，問邊個字寫錯
+  render();
+}
+
 Object.assign(actions, {
   speak: function () {
     if (!canHear()) return;
@@ -1574,7 +1890,10 @@ Object.assign(actions, {
   setWordLang: function (el) {
     if (!canHear()) return;
     ui.quiz.curLang = el.dataset.val;
-    Array.prototype.forEach.call(el.parentElement.children, function (x) { x.classList.toggle('on', x === el); });
+    Array.prototype.forEach.call(el.parentElement.children, function (x) {
+      x.classList.toggle('on', x === el);
+      x.setAttribute('aria-pressed', String(x === el));
+    });
     cancelScheduled();
     speakCurrent();
   },
@@ -1585,22 +1904,14 @@ Object.assign(actions, {
     q.phase = 'answer';
     render();
   },
-  mark: function (el) {
-    const q = ui.quiz;
-    if (q.phase !== 'answer') return;
-    if (el.dataset.ok === '1') { commitAnswer(true, []); return; }
-    if (Array.from(q.words[q.idx]).length <= 1) { commitAnswer(false, [0]); return; }
-    q.pickBad = [];
-    q.phase = 'pick';   // 多過一個字，問邊個字寫錯
-    render();
-  },
+  mark: function (el) { markAnswer(el.dataset.ok === '1'); },
   togglePick: function (el) {
     const q = ui.quiz;
     if (q.phase !== 'pick') return;
     const i = Number(el.dataset.i);
     const at = q.pickBad.indexOf(i);
     if (at === -1) q.pickBad.push(i); else q.pickBad.splice(at, 1);
-    el.classList.toggle('bad');
+    el.setAttribute('aria-pressed', String(el.classList.toggle('bad')));
   },
   confirmPick: function () {
     const q = ui.quiz;
@@ -1689,6 +2000,9 @@ document.addEventListener('click', function (e) {
   if (!el) return;
   const fn = actions[el.dataset.action];
   if (fn) fn(el);
+  // 滑鼠／觸控（detail > 0）撳完朗讀類掣就放走焦點，等 Enter／空白繼續行默書快捷鍵；
+  // 鍵盤啟動嘅 click（detail === 0）唔處理，保持鍵盤同讀屏用家嘅焦點位置
+  if (e.detail > 0 && (el.dataset.action === 'speak' || el.dataset.action === 'slow' || el.dataset.action === 'setWordLang')) el.blur();
 });
 
 document.addEventListener('input', function (e) {
@@ -1714,8 +2028,37 @@ document.addEventListener('keydown', function (e) {
   }
 });
 
+/* 默書鍵盤快捷鍵：空白 = 重聽、Enter = 睇答案、1 = 啱咗、2 = 錯咗。
+   只喺默書畫面生效，而且每個鍵都要符合當時階段（回饋動畫、揀錯字階段全部唔觸發）。
+   以下情況一律唔觸發：確認框打開（計時已暫停）、輸入框／文字區／下拉選單／可編輯內容、帶修飾鍵、長按重覆。
+   焦點喺按鈕或連結時，空白同 Enter 交畀瀏覽器原生處理（否則一撳會觸發兩次） */
+document.addEventListener('keydown', function (e) {
+  if (e.defaultPrevented || e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  const q = ui.quiz;
+  if (ui.view !== 'quiz' || !q) return;
+  if (document.querySelector('.modal-back')) return;
+  const t = e.target;
+  if (t && t.closest && t.closest('input, textarea, select, [contenteditable]:not([contenteditable=false])')) return;
+  const onControl = !!(t && t.closest && t.closest('button, a[href], [role=button]'));
+  if (e.key === ' ' || e.key === 'Enter') {
+    if (onControl) return;
+    e.preventDefault();   // 空白鍵預設會捲動頁面
+    if (e.key === ' ') actions.speak(); else actions.reveal();
+  } else if (e.key === '1' || e.key === '2') {
+    markAnswer(e.key === '1');   // markAnswer 自己檢查階段
+  }
+});
+
 document.addEventListener('change', function (e) {
   if (e.target.id === 'profileName') { saveProfileName(); return; }
+  if (e.target.id === 'voiceSelect') {
+    const s = me();
+    if (!s) return;
+    s.prefs.voiceURI = cleanVoiceURI(e.target.value);
+    saveDB();
+    actions.testVoice();   // 揀完即時試聽
+    return;
+  }
   if (e.target.id !== 'importFile') return;
   const file = e.target.files && e.target.files[0];
   if (!file) return;
@@ -1735,7 +2078,8 @@ document.addEventListener('change', function (e) {
       text: '會取代而家所有資料（共 ' + data.students.length + ' 位同學）。',
       okText: '還原', danger: true
     }, function () {
-      db = { students: data.students, currentId: null };
+      // 還原自一個備份檔，所以資料已經有檔案備份，備份時間當而家
+      db = { students: data.students, currentId: null, lastBackupAt: new Date().toISOString() };
       saveDB();
       render();
       toast('還原成功 ✓');
@@ -1750,3 +2094,10 @@ document.addEventListener('change', function (e) {
 if (db.students.length === 1 && me()) ui.view = 'menu';
 render();
 if (loadNotice) toast(loadNotice, 6000);   // 載入時有資料讀唔到，提示用家
+
+/* PWA：只喺 http(s)（file:// 唔支援 service worker）而且瀏覽器支援先註冊；失敗安靜略過，app 照常使用 */
+if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function () { /* 註冊唔到就當冇離線功能 */ });
+  });
+}
