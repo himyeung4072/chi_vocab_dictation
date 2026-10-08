@@ -25,7 +25,7 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
-html { font-size: 20px; }
+html { font-size: 125%; }   /* 瀏覽器預設 16px 時 = 20px；跟隨用家瀏覽器字號設定 */
 
 body {
   margin: 0;
@@ -54,6 +54,14 @@ h3 { font-size: 1.15rem; }
 .credit { margin: 18px 0 4px; text-align: center; font-size: .8rem; }
 .credit a { color: inherit; text-decoration: underline; white-space: nowrap; }
 .center { text-align: center; }
+.history-note { margin: 4px 0 12px; }
+
+/* 編輯課文嘅詞語預覽：預留最少一行高度，輸入第一個詞語時唔會跳；太多詞語就喺框內捲動 */
+.word-preview { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; min-height: 52px; max-height: 11rem; overflow-y: auto; margin-top: 10px; }
+.word-preview .chip.word { min-height: 40px; padding: 2px 14px; font-size: 1.1rem; background: #FFF9E0; border-color: var(--yellow); }
+
+/* 「睇答案」鎖定提示：永遠佔位 1.6em，文字出現／消失唔會推動版面 */
+.lock-hint { min-height: 1.6em; margin-top: 10px; color: var(--muted); font-size: .9rem; }
 .stack > * + * { margin-top: 14px; }
 
 /* ---------- Buttons ---------- */
@@ -530,6 +538,8 @@ input:focus, textarea:focus {
 
 /* ---------- History ---------- */
 .day-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+/* 「所有紀錄」每日標題列：瀏覽器字號較大、地方唔夠時，刪除按鈕換行，唔會壓住日期（紀錄詳情頁嘅 .day-head 唔用，行為不變） */
+.day-head.wrap { flex-wrap: wrap; gap: 6px 10px; }
 .day-head .t { min-width: 0; }
 .day-head .t b { white-space: nowrap; }
 .day-head .btn { flex: none; white-space: nowrap; }

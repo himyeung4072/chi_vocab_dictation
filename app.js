@@ -25,7 +25,9 @@ const FIRST_DELAY = 1500;  // 開始默書後，第一個詞語朗讀前嘅等�
 const NEXT_DELAY = 1000;   // 下一題出現後，朗讀前嘅等待
 const FEEDBACK_MS = 1200;  // 答啱／錯動畫顯示時間，播完先轉下一題
 const SLOW_RATE = 0.45;    // 「慢啲再讀」嘅速度
-const LOCK_MAX_MS = 12000; // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
+const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
+const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
+const HISTORY_MAX = 200;   // 每位同學最多保留幾多次默書紀錄
 
 const WAIT_HTML = '<span class="dots"><i></i><i></i><i></i></span> 預備緊，聽到就開始寫';
 
@@ -124,9 +126,21 @@ function me() {
   return db.students.find(function (s) { return s.id === db.currentId; }) || null;
 }
 
+/* 輸入詞語時嘅標準化：NFKC 統一全形半形（ＡＢＣ → ABC）。
+   「｜」（全形豎線）逃過 NFKC：NFKC 會將佢變成 |，但之後提示句功能（T5.1）要靠 ｜ 分隔詞語同提示句，所以逐段標準化再接返 */
+function normaliseInput(text) {
+  return String(text).split('｜').map(function (p) { return p.normalize('NFKC'); }).join('｜');
+}
+
+/* 詞語首尾嘅標點（只係首尾，詞語中間嘅字元唔掂；唔包含 | 同 ｜） */
+const EDGE_PUNCT = /^[。．.!?,、;:"'“”‘’「」『』()（）\[\]【】《》〈〉<>…]+|[。．.!?,、;:"'“”‘’「」『』()（）\[\]【】《》〈〉<>…]+$/g;
+
+/* 分隔符：空白（包括換行）、逗號、頓號、分號、斜線。NFKC 後全形逗號／分號／斜線已變半形，兩種都列出嚟 */
 function parseWords(text) {
   const seen = new Set();   // 用 Set：詞語係 constructor、__proto__ 都唔會撞到物件原型
-  return text.split(/[\s,，、;；]+/).map(function (w) { return w.trim(); }).filter(function (w) {
+  return normaliseInput(text).split(/[\s,，、;；/／]+/).map(function (w) {
+    return w.replace(EDGE_PUNCT, '').trim();
+  }).filter(function (w) {
     if (!w || seen.has(w)) return false;
     seen.add(w);
     return true;
@@ -264,6 +278,19 @@ function cleanBank(obj) {
   return out;
 }
 
+/* 課文 id 清單（prefs.lastLessonIds）：只保留非空字串，去重，最多 50 個，每個最多 100 字元 */
+function cleanIds(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  list.forEach(function (x) {
+    if (typeof x !== 'string' || !x || x.length > 100 || seen.has(x) || out.length >= 50) return;
+    seen.add(x);
+    out.push(x);
+  });
+  return out;
+}
+
 function normaliseStudent(st) {
   st.id = String(st.id);
   st.name = String(st.name);
@@ -276,7 +303,8 @@ function normaliseStudent(st) {
   st.prefs = {
     order: pf.order === 'random' ? 'random' : 'seq',
     lang: hasKey(LANGS, pf.lang) ? pf.lang : 'yue',
-    speed: hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal'
+    speed: hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal',
+    lastLessonIds: cleanIds(pf.lastLessonIds)   // 上次默書揀嘅課文
   };
   st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
   st.avatar = AVATARS.indexOf(st.avatar) !== -1 ? st.avatar : AVATARS[0];
@@ -580,7 +608,7 @@ function render() {
   lastView = ui.view;
   $app.innerHTML = '<div class="view' + (animate ? ' enter' : '') + '">' +
     (views[ui.view] || homeView)(s) + '</div>';
-  if (ui.view === 'quiz') afterQuizRender();
+  if (ui.view === 'quiz') { afterQuizRender(); syncLockHint(); }
   if (ui.view === 'setup') refreshCount();
 }
 
@@ -607,11 +635,16 @@ function avatarChips(current, action) {
   }).join('');
 }
 
+/* 年級選擇 chips（新增同學同設定頁共用）；action 係撳落去執行嘅 data-action */
+function gradeChips(current, action) {
+  return GRADES.map(function (g, i) {
+    return '<button class="chip' + (current === i + 1 ? ' on' : '') + '" data-action="' + action + '" data-key="grade" data-val="' + (i + 1) + '">' + g + '</button>';
+  }).join('');
+}
+
 function addView() {
   const f = ui.form;
-  const grades = GRADES.map(function (g, i) {
-    return '<button class="chip' + (f.grade === i + 1 ? ' on' : '') + '" data-action="setForm" data-key="grade" data-val="' + (i + 1) + '">' + g + '</button>';
-  }).join('');
+  const grades = gradeChips(f.grade, 'setForm');
   const avs = avatarChips(f.avatar, 'setForm');
   return '<div class="topnav"><button class="back" data-action="goHome">← 返回</button></div>' +
     '<div class="card"><h2>新同學</h2>' +
@@ -655,17 +688,34 @@ function lessonsView(s) {
     '<button class="btn green block" style="margin-top:20px" data-action="newLesson">➕ 新增一課</button>';
 }
 
+/* 編輯課文時嘅即時預覽：解析後嘅詞語 chips（詞語係用家輸入，一律 esc） */
+function wordPreviewHtml(list) {
+  if (!list.length) return '<span class="muted">輸入詞語後，呢度會顯示解析結果</span>';
+  return list.map(function (w) { return '<span class="chip word">' + esc(w) + '</span>'; }).join('');
+}
+
+/* 編輯課文有冇未儲存改動：課文名或詞語同開啟時嘅內容唔同 */
+function editDirty() {
+  const t = document.getElementById('lessonTitle');
+  const w = document.getElementById('lessonWords');
+  if (ui.view !== 'lessonEdit' || !ui.editBase || !t || !w) return false;
+  return t.value !== ui.editBase.title || w.value !== ui.editBase.words;
+}
+
 function lessonEditView(s) {
   const lesson = ui.editLessonId ? s.lessons.find(function (l) { return l.id === ui.editLessonId; }) : null;
   const title = lesson ? lesson.title : '第' + (s.lessons.length + 1) + '課';
   const words = lesson ? lesson.words.join('\n') : '';
-  return '<div class="topnav"><button class="back" data-action="goLessons">← 返回</button></div>' +
+  ui.editBase = { title: title, words: words };   // 開啟時嘅內容，用嚟偵測有冇未儲存改動
+  const parsed = parseWords(words);
+  return '<div class="topnav"><button class="back" data-action="leaveEdit">← 返回</button></div>' +
     '<div class="card"><h2>' + (lesson ? '修改課文' : '新增課文') + '</h2>' +
     '<label class="field-label" for="lessonTitle">課文名稱</label>' +
     '<input type="text" id="lessonTitle" maxlength="20" autocomplete="off" value="' + esc(title) + '">' +
-    '<label class="field-label" for="lessonWords">詞語（一行一個，或者用逗號、空格分開）</label>' +
+    '<label class="field-label" for="lessonWords">詞語（一行一個，或者用逗號、空格、斜線分開）</label>' +
     '<textarea id="lessonWords" placeholder="例如：&#10;蘋果&#10;香蕉&#10;西瓜">' + esc(words) + '</textarea>' +
-    '<p class="muted" style="margin-top:8px">共 <b id="wordCount">' + parseWords(words).length + '</b> 個詞語</p>' +
+    '<p class="muted" style="margin-top:8px">共 <b id="wordCount">' + parsed.length + '</b> 個詞語（儲存時會自動去走頭尾標點同重複詞語）</p>' +
+    '<div class="word-preview" id="wordPreview" role="group" aria-label="詞語預覽">' + wordPreviewHtml(parsed) + '</div>' +
     '<button class="btn green block" style="margin-top:18px" data-action="saveLesson">儲存 ✓</button></div>';
 }
 
@@ -734,6 +784,7 @@ function settingsView(s) {
     '<div class="name-edit"><input type="text" id="profileName" maxlength="10" autocomplete="off" value="' + esc(s.name) + '" placeholder="輸入名稱" aria-describedby="profileHint">' +
     '<button class="btn small" data-action="saveProfileName">儲存</button></div>' +
     '<p class="field-error" id="profileHint" role="alert" hidden></p>' +
+    '<span class="field-label">讀幾年級？</span><div class="chips" data-group="grade">' + gradeChips(s.grade, 'setMyGrade') + '</div>' +
     '<span class="field-label">揀個公仔</span><div class="chips" data-group="avatar">' + avatarChips(s.avatar, 'setMyAvatar') + '</div></div>' +
     '<div class="card" style="margin-top:16px"><h2>設定</h2>' +
     '<span class="field-label">次序</span>' + group('order', chip('order', 'seq', '➡️ 順序') + chip('order', 'random', '🔀 亂序')) +
@@ -771,8 +822,12 @@ function saveProfileName() {
 }
 
 function initSetup(s, source) {
+  // 還原上次揀嘅課文（已刪除嘅略過）；冇記錄或者全部失效就揀最新（最後加入）一課
+  const exists = new Set(s.lessons.map(function (l) { return l.id; }));
+  let ids = s.prefs.lastLessonIds.filter(function (id) { return exists.has(id); });
+  if (!ids.length && s.lessons.length) ids = [s.lessons[s.lessons.length - 1].id];
   ui.setup = {
-    source: source, lessonIds: [], count: 12   // count: 12 = 預設；null = 全部詞語
+    source: source, lessonIds: ids, count: 12   // count: 12 = 預設；null = 全部詞語
   };
 }
 
@@ -844,7 +899,25 @@ function listenHtml(q) {
     langSwitch(q) +
     '<div><button class="btn ghost small" data-action="slow">🐢 慢啲再讀</button></div>' +
     '<button class="btn green block" id="revealBtn" style="margin-top:22px;min-height:64px;font-size:1.25rem" data-action="reveal"' +
-    (q.locked ? ' disabled' : '') + '>' + revealLabel(q.locked) + '</button>';
+    (q.locked ? ' disabled' : '') + '>' + revealLabel(q.locked) + '</button>' +
+    // 預留位置（min-height），鎖定提示出現／消失時版面唔會跳；內容由 syncLockHint 填
+    '<p class="lock-hint" id="lockHint" role="status"></p>';
+}
+
+/* 「睇答案」鎖定期間顯示「聽唔到？撳 🔊 再試」，解鎖即清走。
+   延遲一陣先填入，等讀屏軟件偵測到 role=status 內容有變而公佈一次 */
+function syncLockHint() {
+  const q = ui.quiz;
+  const el = document.getElementById('lockHint');
+  if (!q || !el) return;
+  if (!q.locked) { el.textContent = ''; return; }
+  const idx = q.idx;
+  setTimeout(function () {
+    const now = document.getElementById('lockHint');
+    if (now && ui.view === 'quiz' && ui.quiz === q && q.idx === idx && q.phase === 'listen' && q.locked) {
+      now.textContent = LOCK_HINT;
+    }
+  }, 100);
 }
 
 function answerHtml(q, word) {
@@ -1075,13 +1148,14 @@ function historyView(s) {
   }
 
   const cards = groups.map(function (g) {
-    return '<div class="card"><div class="day-head"><div class="t"><b>' + dayLabel(g.date) + '</b>' +
+    return '<div class="card"><div class="day-head wrap"><div class="t"><b>' + dayLabel(g.date) + '</b>' +
       '<div class="muted">' + g.items.length + ' 次 · 平均 ' + avgText(g.items) + '</div></div>' +
       '<button class="btn ghost small" data-action="deleteDay" data-day="' + esc(g.key) + '">🗑 刪除呢日</button></div>' +
       g.items.map(recRow).join('') + '</div>';
   }).join('');
 
-  return back + '<h2 style="margin-bottom:12px">所有紀錄</h2><div class="stack">' + cards + '</div>';
+  return back + '<h2>所有紀錄</h2><p class="muted history-note">只保留最近 ' + HISTORY_MAX + ' 次默書紀錄，更舊嘅會自動刪走。</p>' +
+    '<div class="stack">' + cards + '</div>';
 }
 
 function recordView(s) {
@@ -1168,6 +1242,8 @@ function unlockReveal() {
   const b = document.getElementById('revealBtn');
   if (!b) return;
   b.disabled = false;
+  const hint = document.getElementById('lockHint');
+  if (hint) hint.textContent = '';
   b.textContent = revealLabel(false);
   b.classList.remove('pop-in');
   void b.offsetWidth;   // 重新播放動畫
@@ -1251,7 +1327,7 @@ function finishQuiz(s) {
     results: q.results.map(function (r) { return { word: r.word, ok: r.ok, bad: r.bad }; })
   };
   s.history.push(rec);
-  if (s.history.length > 200) s.history = s.history.slice(-200);
+  if (s.history.length > HISTORY_MAX) s.history = s.history.slice(-HISTORY_MAX);
   saveDB();
   ui.result = {
     total: rec.total, planned: rec.planned, incomplete: rec.incomplete,
@@ -1320,7 +1396,17 @@ Object.assign(actions, {
   importData: function () { document.getElementById('importFile').click(); },
 
   goMenu: function () { go('menu'); },
-  goLessons: function () { ui.editLessonId = null; go('lessons'); },
+  goLessons: function () { ui.editLessonId = null; ui.editBase = null; go('lessons'); },
+  /* 編輯頁嘅「← 返回」：有未儲存改動先問；取消就停留喺編輯頁，輸入內容原封不動 */
+  leaveEdit: function () {
+    if (!editDirty()) { actions.goLessons(); return; }
+    confirmBox({
+      icon: '📝', title: '未儲存，確定離開？',
+      text: '你改咗嘅課文名稱或者詞語唔會儲存。', okText: '離開', danger: true
+    }, function () {
+      if (ui.view === 'lessonEdit') actions.goLessons();
+    });
+  },
   newLesson: function () { ui.editLessonId = null; go('lessonEdit'); },
   editLesson: function (el) { ui.editLessonId = el.dataset.id; go('lessonEdit'); },
   deleteLesson: function (el) {
@@ -1386,6 +1472,15 @@ Object.assign(actions, {
     selectInGroup(el);
     toast('已更新 ✓');
   },
+  setMyGrade: function (el) {
+    const s = me();
+    const g = Number(el.dataset.val);
+    if (!Number.isInteger(g) || g < 1 || g > GRADES.length || s.grade === g) return;   // 只接受 1–6
+    s.grade = g;
+    saveDB();
+    selectInGroup(el);
+    toast('已更新 ✓');
+  },
   setPref: function (el) {
     const s = me();
     s.prefs[el.dataset.key] = el.dataset.val;
@@ -1443,6 +1538,10 @@ Object.assign(actions, {
     const p = s.prefs;   // 次序、朗讀語言、速度全部由設定頁讀取
     words = pickWords(words, n, p.order);
     if (n < total) label += '（抽 ' + n + ' 個）';
+    if (c.source === 'lessons') {   // 成功開始先記住今次揀嘅課文
+      p.lastLessonIds = c.lessonIds.filter(function (id) { return s.lessons.some(function (l) { return l.id === id; }); });
+      saveDB();
+    }
     unlockSpeech();
     ui.quiz = {
       source: c.source, label: label, words: words, idx: 0, results: [],
@@ -1595,7 +1694,9 @@ document.addEventListener('click', function (e) {
 document.addEventListener('input', function (e) {
   if (e.target.id === 'nameInput') ui.form.name = e.target.value;
   if (e.target.id === 'lessonWords') {
-    document.getElementById('wordCount').textContent = parseWords(e.target.value).length;
+    const list = parseWords(e.target.value);
+    document.getElementById('wordCount').textContent = list.length;
+    document.getElementById('wordPreview').innerHTML = wordPreviewHtml(list);
   }
   if (e.target.id === 'countRange' && ui.setup) {
     const total = setupTotal(me(), ui.setup);
@@ -1644,5 +1745,8 @@ document.addEventListener('change', function (e) {
   e.target.value = '';
 });
 
+// 只有一位同學而且上次冇撳「換人」（currentId 有效）：開 app 直接入主選單。
+// 撳「← 換人」會清 currentId，所以返到揀同學畫面之後唔會被彈返主選單
+if (db.students.length === 1 && me()) ui.view = 'menu';
 render();
 if (loadNotice) toast(loadNotice, 6000);   // 載入時有資料讀唔到，提示用家
