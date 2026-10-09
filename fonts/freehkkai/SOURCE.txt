@@ -1,0 +1,127 @@
+Free HK Kai (自由香港楷書) 4700 -- self-hosted WOFF2 slices for the 默書樂園 answer font
+=====================================================================================
+
+Font        : Free HK Kai 4700 (自由香港楷書 4700字版), Regular, "Version 1.02"
+              name ID 3 = FreeHKKai4700-v1_02-20170113 (released 2017-01-13)
+Creator     : Free Hong Kong Fonts (自由香港字型) -- (c) 2016 Free Hong Kong Fonts
+Licence     : Creative Commons Attribution 4.0 International (CC BY 4.0)
+              https://creativecommons.org/licenses/by/4.0/
+              Legal code copied verbatim: LICENSE-CC-BY-4.0.txt
+Official URL: https://freehkfonts.opensource.hk/download/
+Upstream    : https://github.com/freehkfonts/freehkkai  (branch "download")
+Derived from: 台灣全字庫正楷體 (CNS11643, Taiwan National Development Council) -- stated by the
+              authors in the official notice (Notice-for-Use.txt, Official-notice-download-page.txt).
+
+Official notice texts (copied verbatim, not edited)
+---------------------------------------------------
+Notice-for-Use.txt                  = "Notice for Use.txt" from GitHub commit
+                                      534796ffea42d7ad3f225fa167bdbb51ddc883df (branch download, 2016-12-23)
+                                      https://github.com/freehkfonts/freehkkai/blob/534796ffea42d7ad3f225fa167bdbb51ddc883df/Notice%20for%20Use.txt
+                                      git blob sha1 f0f5ad001a8efbd5dd5418134cf0f3037edfcced (verified)
+                                      SHA-256 fe63dfa8d8fa42000a5216903db21774c3dca2a74977e9b3543e4dfad2cee6dc
+LICENSE-CC-BY-4.0.txt               = "LICENSE" from the same commit
+                                      git blob sha1 06c608dcf4552094bc86dc48aaa90addb2886049 (verified)
+                                      SHA-256 fd3a263fe19ed8faa9068b43abaebafc02c77897b0c6fc09abc04bb592e5f16e
+Official-notice-download-page.txt   = the 開放授權條款 / 鳴謝 text of https://freehkfonts.opensource.hk/download/
+                                      as served on 2026-10-07 (HTML tags removed, wording unchanged;
+                                      page HTML SHA-256 3f543f0cec80c2875839f066fe4aeb10328cb52a9c3d141fd0f65d5a60676f3f)
+The page text and Notice-for-Use.txt are not identical (the page text is shorter, writes "CC-BY 4.0",
+and does not list the acknowledged people; the GitHub file does). Both say CC BY 4.0. The README.md on
+the same commit (git blob sha1 954b95bebc8ac25d0916f904e82cd9fa372a5326) carries the same text as
+Notice-for-Use.txt with trailing commas; it is not copied here.
+
+Download (pinned)
+-----------------
+File        : Free-HK-Kai_4700-v1.02.ttf
+URL         : https://freehkfonts.opensource.hk/fonts/Free-HK-Kai_4700-v1.02.ttf
+              (the 【按我下載】 link on the official download page)
+Size        : 6,396,120 bytes
+SHA-256     : b83308bfe4772b5c02fb5364cafbcf25288e5904416229c3145e3b4c43dd5a54
+HTTP        : Last-Modified Fri, 13 Jan 2017 09:00:31 GMT, ETag "5878972f-6198d8" (matches the V1.02 date)
+Downloaded  : 2026-10-07
+NOTE        : the GitHub repository only holds V1.01 (Free-HK-Kai_4700-v1.01.ttf, 4,521,472 bytes, SHA-256
+              f949362df4c3e8d8f2f5e9c6e5932ce3aa4ab3176b3c0bfa61afbb8c7b750ada, git blob sha1
+              54b7c949592c8ec4b5302f282a3a04b7fab14f19). V1.02 is only offered from the official site, so
+              V1.02 could not be cross-checked against a GitHub copy. The two files differ: glyph
+              coordinates/advance widths are not the same in any Han glyph (V1.02 looks re-scaled; the
+              cause was not analysed), and V1.02 has 4 more Han characters (丢 册 匀 揑).
+
+Modifications made by this project (CC BY 4.0 section 3(a)(1)(B): indicate if modified)
+---------------------------------------------------------------------------------------
+1. Format: TTF (TrueType outlines) converted to WOFF2 (Brotli).
+2. Subsetting and slicing: the font is cut into 53 WOFF2 files (freehkkai-01 .. -53) so a browser only
+   downloads the slices holding the characters actually shown; freehkkai.css maps each slice with
+   unicode-range. Only these code points were kept (7,040 of the 14,061 in the original):
+     - all 4,819 Han ideographs of the original (CJK Unified Ideographs, Ext A, Compatibility);
+     - Basic Latin, Latin-1, Latin Extended-A/B, General Punctuation, Letterlike Symbols, Number Forms,
+       Arrows, Enclosed Alphanumerics, Geometric Shapes;
+     - CJK Radicals, CJK Symbols and Punctuation, Hiragana, Katakana, Bopomofo, Enclosed CJK,
+       CJK Compatibility, CJK Compatibility Forms, Small Form Variants, Halfwidth and Fullwidth Forms.
+   Exact ranges (intersected with the original's cmap): U+0020-007E, U+00A0-024F, U+2000-206F,
+   U+2100-21FF, U+2460-24FF, U+25A0-25FF, U+2E80-2FDF, U+3000-30FF, U+3100-312F, U+3190-33FF,
+   U+FE30-FE6F, U+FF00-FFEF, plus Han U+3400-4DBF, U+4E00-9FFF, U+F900-FAFF.
+   Removed: the other 7,021 code points of the original (Greek/Cyrillic/Armenian/Arabic/Indic/Thai/
+   Hangul/Ethiopic/Canadian Aboriginal/Braille/mathematical and other symbols etc.), which a Chinese
+   dictation app does not use.
+3. Tables dropped by the subsetter: morx, feat, FFTM (Apple fraction/ligature feature tables, none of
+   which affect Chinese text) and Macintosh-platform name records. The Apple "prop" table is only kept
+   in slices 01-02 (the Han slices have no use for it). Windows-platform name records,
+   including name ID 0 (copyright / licence statement), are kept unchanged in every slice.
+   Hinting is not present in the original and not added. Glyph names are not kept.
+4. Glyph shapes were NOT modified: for all 7,040 kept code points, outline coordinates and advance
+   widths in the slices are identical to the original TTF (checked by script). Ascent/descent and
+   other vertical metrics are identical in all slices.
+
+Tools (development machine, temporary venv, not part of the project)
+-------------------------------------------------------------------
+Python 3.13.14, fontTools 4.59.0, Brotli 1.1.0 (pip, pinned). fontTools.subset options: flavor=woff2,
+hinting=False, notdef_outline=True, glyph_names=False, layout_features=*, name_IDs=*,
+name_languages=*, legacy_kern=False. Slice order was decided with Unicode 16.0.0 Unihan.zip
+(https://www.unicode.org/Public/16.0.0/ucd/Unihan.zip, SHA-256
+b8f000df69de7828d21326a2ffea462b04bc7560022989f7cc704f10521ef3e0; used only on the dev machine to group
+characters, not shipped): fields kGradeLevel (Hong Kong primary grade 1-6, from the Longman
+Elementary Chinese Dictionary), kHKGlyph (index into the 2000 revised edition of the HK 常用字字形表,
+not the 2007 edition the font claims), kBigFive.
+
+Slice layout
+------------
+freehkkai-01   Latin, punctuation and symbols (1,091 code points)
+freehkkai-02   CJK symbols, kana, Bopomofo, fullwidth forms, enclosed/compatibility (1,130)
+freehkkai-03..37  2,599 Han characters that Unihan kGradeLevel lists for HK grade 1-6, grade order, 75 per slice
+freehkkai-38..52  2,183 further Han characters listed in kHKGlyph, up to 150 per slice
+freehkkai-53   37 remaining Han characters of the font
+Total WOFF2 size 2,753,112 bytes (53 files); freehkkai.css 46,790 bytes (generated, 53 rules, each with
+font-display: swap and unicode-range). SHA256SUMS.txt lists every file in this folder except itself and
+SOURCE.txt.
+
+Integrity checks run on the generated files: every slice's cmap equals its planned code point set; the
+slices do not overlap and their union is exactly the 7,040 kept code points; each unicode-range in
+freehkkai.css decodes back to the same set; outlines and advance widths equal the original.
+
+Reproduce (the build scripts are intentionally not kept in the project)
+-----------------------------------------------------------------------
+1. Download the TTF above and check its SHA-256.
+2. For each slice, load the TTF with fontTools, subset to the code points listed for that slice
+   (options above), set flavor "woff2" and save. Slice membership: see "Slice layout"; inside a grade or
+   group the characters are ordered by Big5 code (Unihan kBigFive), then by code point.
+3. Write one @font-face per slice with unicode-range = the slice's code points (consecutive code points
+   joined into ranges).
+
+Attribution in the app
+----------------------
+Settings page footer: "答案字型：自由香港楷書 (Free HK Kai)，CC BY 4.0；改編自全字庫正楷體。" with
+"自由香港楷書" linking to https://freehkfonts.opensource.hk/download/ and "CC BY 4.0" linking to
+https://creativecommons.org/licenses/by/4.0/ (both target=_blank rel=noopener). This project is not
+affiliated with, nor endorsed by, the font's authors (CC BY 4.0 section 2(a)(6)).
+
+Claims and limits
+-----------------
+- "Based on the 常用字字形表 (2007年重排本) / 4,762 primary-school common characters" is the authors' own
+  statement (see the notice files). It has NOT been independently verified by this project, and nothing
+  here claims that the font conforms to the Hong Kong Education Bureau standard.
+- The authors state the font is derived from 台灣全字庫正楷體, which is licensed under several terms
+  (links in the notice). This project has not reviewed those upstream terms and relies on the authors'
+  statement that the CC BY release meets them.
+- The font has Han coverage of about 4,800 characters only. It does not contain, for example,
+  嘅 咗 哋 啲 嚟 冇 佢 喺 (唔 is included), nor 爲 (U+7232); text outside the coverage falls back
+  to the next font in the CSS stack.

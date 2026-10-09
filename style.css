@@ -2,28 +2,35 @@
   --bg: #FFF6E5;
   --card: #FFFFFF;
   --text: #4A3B32;
-  --muted: #9A8A7E;
-  --orange: #FF8A3D;
-  --orange-d: #D96A1F;
-  --green: #4CAF7A;
-  --green-d: #348558;
-  --red: #F0616D;
-  --red-d: #C8434F;
-  --blue: #5AA9E6;
-  --blue-d: #3B82BD;
+  --muted: #726256;      /* 白底 5.84:1、語言切換底 4.94:1 */
+  /* 主色已加深：白字對底色 ≥ 4.7:1；-d 係按鈕底部陰影同深色文字用 */
+  --orange: #C44E0A;
+  --orange-d: #8F3607;
+  --green: #2B8053;
+  --green-d: #1A5A37;
+  --red: #D4364A;
+  --red-d: #9C2235;
+  --blue: #2878B5;
+  --blue-d: #174F80;
   --yellow: #FFD166;
   --line: #F0E2C8;
   --radius: 26px;
+  --font-ui: "PingFang HK", "Microsoft JhengHei", "Noto Sans TC", "Heiti TC", sans-serif;
+  /* 答案專用楷書：首選自行託管嘅「自由香港楷書」（fonts/freehkkai/，CC BY 4.0，約 4,800 個漢字）。
+     字體冇收錄嘅字會逐字退回系統楷書：Windows 用 DFKai-SB（標楷體），其次 macOS BiauKai／Kaiti TC、舊版 macOS STKaiti；
+     手機（iOS／Android）冇系統楷書，最後退回 serif。Windows 字體不可自行託管（Microsoft 授權）。
+     曾試過 LXGW WenKai TC，但「為」會顯示成「爲」形，已停用（fonts/ 根目錄嘅 LXGW 檔案仍保留在磁碟，未載入） */
+  --font-kai: "Free HK Kai", "DFKai-SB", "標楷體", "BiauKai", "Kaiti TC", "STKaiti", serif;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
-html { font-size: 20px; }
+html { font-size: 125%; }   /* 瀏覽器預設 16px 時 = 20px；跟隨用家瀏覽器字號設定 */
 
 body {
   margin: 0;
   color: var(--text);
-  font-family: "PingFang HK", "Microsoft JhengHei", "Noto Sans TC", "Heiti TC", sans-serif;
+  font-family: var(--font-ui);
   line-height: 1.5;
   min-height: 100vh;
   background:
@@ -43,7 +50,42 @@ h2 { font-size: 1.5rem; }
 h3 { font-size: 1.15rem; }
 
 .muted { color: var(--muted); font-size: .85rem; }
+
+/* 只畀讀屏軟件讀：視覺隱藏但保留喺無障礙樹（獨立 live region、畫面標題用） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* 換畫面後用程式將焦點放喺標題（tabindex=-1，唔係可操作元素），唔需要焦點框 */
+[tabindex="-1"]:focus { outline: none; }
+/* 鍵盤快捷鍵提示：只喺有滑鼠／實體鍵盤嘅裝置顯示，手機唔佔位 */
+.kbd-hint { display: none; margin-top: 10px; color: var(--muted); font-size: .8rem; text-align: center; }
+.kbd-hint span { display: inline-block; margin: 0 6px; white-space: nowrap; }
+@media (hover: hover) and (pointer: fine) { .kbd-hint { display: block; } }
+/* 設定頁底部字體署名：細字、置中；連結跟返 muted 顏色（頁面底色上 ≥ 4.6:1），靠底線分辨 */
+.credit { margin: 18px 0 4px; text-align: center; font-size: .8rem; }
+.credit a { color: inherit; text-decoration: underline; white-space: nowrap; }
 .center { text-align: center; }
+.history-note { margin: 4px 0 12px; }
+
+/* 編輯課文嘅詞語預覽：預留最少一行高度，輸入第一個詞語時唔會跳；太多詞語就喺框內捲動 */
+.word-preview { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; min-height: 52px; max-height: 11rem; overflow-y: auto; margin-top: 10px; }
+.word-preview .chip.word { min-height: 40px; padding: 2px 14px; font-size: 1.1rem; background: #FFF9E0; border-color: var(--yellow); }
+/* 提示句（T5.1）：預覽 chip 入面細字顯示；長句可以斷行，唔會撐闊版面 */
+.word-preview .chip.word { max-width: 100%; }
+.chip.word small.hint { font-weight: 400; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
+.hint-help { margin: -2px 0 8px; }
+
+/* 「睇答案」鎖定提示：永遠佔位 1.6em，文字出現／消失唔會推動版面 */
+.lock-hint { min-height: 1.6em; margin-top: 10px; color: var(--muted); font-size: .9rem; }
 .stack > * + * { margin-top: 14px; }
 
 /* ---------- Buttons ---------- */
@@ -70,7 +112,8 @@ button { font: inherit; color: inherit; cursor: pointer; border: 0; background: 
   font-size: 1.1rem;
   color: #fff;
   background-color: var(--c);
-  background-image: linear-gradient(180deg, rgba(255,255,255,.3), rgba(255,255,255,0) 58%);
+  /* 光澤只留喺按鈕上緣，唔好蓋住文字：否則白字實際對比會跌到 4.0 */
+  background-image: linear-gradient(180deg, rgba(255,255,255,.2), rgba(255,255,255,0) 26%);
   box-shadow: 0 5px 0 var(--cd);
   transition: transform .12s cubic-bezier(.3, 1.6, .5, 1), box-shadow .12s;
 }
@@ -133,7 +176,7 @@ button { font: inherit; color: inherit; cursor: pointer; border: 0; background: 
   pointer-events: none;
 }
 .btn.ghost .ripple, .chip .ripple, .student-card .ripple, .lang-btn .ripple,
-.icon-btn .ripple, .rec-main .ripple, .tile .ripple { background: rgba(255, 138, 61, .25); }
+.icon-btn .ripple, .rec-main .ripple, .tile .ripple { background: rgba(196, 78, 10, .25); }
 
 /* ---------- Cards ---------- */
 .card {
@@ -167,12 +210,13 @@ button { font: inherit; color: inherit; cursor: pointer; border: 0; background: 
 .chip.avatar.on { background: #FFE9D2; color: inherit; }
 .chip.avatar.on::before { content: none; }
 .chip.pop { animation: chipPop .38s cubic-bezier(.3, 1.6, .5, 1); }
-.chip.word { cursor: default; font-size: 1.2rem; background: #FFF0F0; border-color: #F8C4C8; overflow: visible; }
+.chip.word { cursor: default; font-family: var(--font-kai); font-size: 1.2rem; font-weight: 400; background: #FFF0F0; border-color: #F8C4C8; overflow: visible; }
+.chip.word small, .chip.word .chip-x { font-family: var(--font-ui); font-weight: 700; }
 .chip.word:active { transform: none; }
 
 .field-label { font-weight: 700; margin: 18px 0 8px; display: block; }
 
-input[type=text], textarea {
+input[type=text], input[type=password], textarea {
   width: 100%;
   font: inherit;
   font-size: 1.2rem;
@@ -187,7 +231,7 @@ textarea { min-height: 220px; resize: vertical; line-height: 1.8; }
 input:focus, textarea:focus {
   outline: none;
   border-color: var(--orange);
-  box-shadow: 0 0 0 4px rgba(255, 138, 61, .18);
+  box-shadow: 0 0 0 4px rgba(196, 78, 10, .18);
 }
 
 /* ---------- Home / students ---------- */
@@ -237,7 +281,7 @@ input:focus, textarea:focus {
   font-weight: 800;
   font-size: 1.25rem;
   background-color: var(--c);
-  background-image: linear-gradient(160deg, rgba(255,255,255,.3), rgba(255,255,255,0) 55%);
+  background-image: linear-gradient(160deg, rgba(255,255,255,.2), rgba(255,255,255,0) 32%);
   box-shadow: 0 7px 0 var(--cd);
   transition: transform .14s cubic-bezier(.3, 1.6, .5, 1), box-shadow .14s;
 }
@@ -338,7 +382,7 @@ input:focus, textarea:focus {
   margin: 18px auto 6px;
   border-radius: 50%;
   background-color: var(--blue);
-  background-image: linear-gradient(160deg, rgba(255,255,255,.3), rgba(255,255,255,0) 55%);
+  background-image: linear-gradient(160deg, rgba(255,255,255,.2), rgba(255,255,255,0) 32%);
   box-shadow: 0 8px 0 var(--blue-d);
   font-size: 4rem;
   display: flex;
@@ -362,6 +406,8 @@ input:focus, textarea:focus {
 .dots i:nth-child(2) { animation-delay: .15s; }
 .dots i:nth-child(3) { animation-delay: .3s; }
 
+.read-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; }
+
 .lang-switch {
   display: inline-flex;
   background: #F6EBD4;
@@ -380,18 +426,28 @@ input:focus, textarea:focus {
 }
 .lang-btn.on { background: #fff; color: var(--blue-d); box-shadow: 0 2px 0 rgba(0, 0, 0, .08); }
 
+/* 答案框：外層做 container，字號按實際闊度（cqi）計，唔會因為手機闊度、padding 或邊框而斷行。
+   --n = 字數；每個字佔 1.1em = 字寬 + letter-spacing .05em。
+   字寬按自由香港楷書實測：大部分字 1.02em，最闊約 1.05em（極少數 1.07–1.14em）；系統楷書後備字體係 1em，所以 1.1 兩邊都夠位。
+   22px = 左右 padding 8px 同邊框 3px 各兩邊 */
+.answer-wrap { container-type: inline-size; margin: 20px 0 10px; }
 .answer-box {
-  margin: 20px 0 10px;
+  --n: 4;
   padding: 14px 8px;
   background: #FFF9E0;
   border: 3px dashed var(--yellow);
   border-radius: 20px;
-  font-weight: 800;
+  font-family: var(--font-kai);
+  font-weight: 400;
   line-height: 1.3;
   letter-spacing: .05em;
-  word-break: break-all;
+  white-space: nowrap;
+  font-size: min(18vw, 110px, calc((min(100vw, 720px) - 90px) / (var(--n) * 1.1)));   /* 唔支援 cqi 嘅舊瀏覽器：#app 最闊 720px */
+  font-size: min(18vw, 110px, calc((100cqi - 22px) / (var(--n) * 1.1)));
   animation: answerIn .4s cubic-bezier(.3, 1.2, .5, 1);
 }
+/* 答案下面嘅提示句：介面字型（唔用楷書）、細字、muted 色 */
+.answer-hint { margin: 0 0 10px; font-family: var(--font-ui); font-size: .95rem; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
 
 .two-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
 .two-btns .btn { min-height: 72px; font-size: 1.3rem; }
@@ -404,8 +460,9 @@ input:focus, textarea:focus {
   border-radius: 20px;
   background: #FFF9E0;
   border: 3px solid var(--yellow);
+  font-family: var(--font-kai);
   font-size: calc(var(--sz) * .6);
-  font-weight: 800;
+  font-weight: 400;
   line-height: 1;
   box-shadow: 0 5px 0 #EBC65A;
   transition: transform .15s cubic-bezier(.3, 1.6, .5, 1), background .15s, border-color .15s, box-shadow .15s, color .15s;
@@ -418,11 +475,12 @@ input:focus, textarea:focus {
   box-shadow: 0 2px 0 var(--red-d);
   transform: translateY(3px);
 }
-.tile.bad::after { content: '✗'; position: absolute; top: 3px; right: 9px; font-size: .9rem; font-weight: 800; }
+.tile.bad::after { content: '✗'; position: absolute; top: 3px; right: 9px; font-family: var(--font-ui); font-size: .9rem; font-weight: 800; }
 
 /* 答題後回饋 */
 .fb {
   position: relative;
+  container-type: inline-size;
   min-height: 320px;
   display: flex;
   flex-direction: column;
@@ -435,7 +493,20 @@ input:focus, textarea:focus {
 .fb.ok .fb-av { animation: jump .95s cubic-bezier(.3, 1.4, .5, 1); }
 .fb.bad .fb-av { animation: shake .7s ease-in-out; }
 .fb h2 { margin-top: 8px; animation: pop .45s .1s cubic-bezier(.3, 1.5, .5, 1) backwards; }
-.fb .fb-word { font-size: 2rem; font-weight: 800; margin-top: 6px; animation: pop .4s .25s backwards; }
+/* 字號按 .fb（container）闊度計：每個標紅嘅字（.badc）額外佔 padding 8px + margin 2px = 10px */
+.fb .fb-word {
+  --n: 4;
+  --b: 0;
+  font-family: var(--font-kai);
+  font-size: 2rem;
+  /* 唔支援 cqi 嘅舊瀏覽器：卡片內闊 = min(100vw, 720px) - #app padding 32 - 卡片邊框 4 - 卡片 padding 32 */
+  font-size: min(2rem, calc((min(100vw, 720px) - 68px - var(--b) * 10px - 2px) / var(--n)));
+  font-size: min(2rem, calc((100cqi - var(--b) * 10px - 2px) / var(--n)));
+  font-weight: 400;
+  white-space: nowrap;
+  margin-top: 6px;
+  animation: pop .4s .25s backwards;
+}
 .burst span { position: absolute; left: 50%; top: 38%; font-size: 1.6rem; animation: burst .95s ease-out forwards; }
 
 /* ---------- Result ---------- */
@@ -446,13 +517,15 @@ input:focus, textarea:focus {
 .result-card .stars span:nth-child(1) { animation-delay: .1s; }
 .result-card .stars span:nth-child(2) { animation-delay: .35s; }
 .result-card .stars span:nth-child(3) { animation-delay: .6s; }
-.score { font-size: 3rem; font-weight: 800; color: var(--orange-d); line-height: 1.2; }
+.score { font-size: 3rem; font-weight: 800; color: var(--orange); line-height: 1.2; }
+.score.inc { font-size: 1.5rem; color: var(--text); margin-top: 8px; }
 .result-section { margin-top: 20px; text-align: left; }
 .result-section h3 { margin-bottom: 8px; }
+.bank-left { margin-top: 14px; }
 
 /* ---------- Stats ---------- */
 .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center; }
-.summary .num { font-size: 1.8rem; font-weight: 800; color: var(--orange-d); line-height: 1.2; }
+.summary .num { font-size: 1.8rem; font-weight: 800; color: var(--orange); line-height: 1.2; }
 
 .bars { display: flex; align-items: flex-end; gap: 6px; height: 150px; margin-top: 10px; }
 .bar-col {
@@ -475,11 +548,12 @@ input:focus, textarea:focus {
 }
 .bar-col .bar.mid { background: var(--yellow); }
 .bar-col .bar.low { background: var(--red); }
+.bar-col .bar.inc { background: repeating-linear-gradient(45deg, #D9CCBF 0 6px, #EDE3D8 6px 12px); }
 .bar-col small { font-size: .7rem; color: var(--muted); white-space: nowrap; }
 .bar-col .v { font-size: .75rem; font-weight: 700; }
 
 .rate-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
-.rate-row .w { flex: none; min-width: 3.6em; font-weight: 800; font-size: 1.15rem; }
+.rate-row .w { flex: none; min-width: 3.6em; font-family: var(--font-kai); font-weight: 400; font-size: 1.15rem; }
 .rate-row .meter { flex: 1; height: 14px; background: #FDE3E5; border-radius: 999px; overflow: hidden; }
 .rate-row .meter i {
   display: block;
@@ -493,6 +567,8 @@ input:focus, textarea:focus {
 
 /* ---------- History ---------- */
 .day-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+/* 「所有紀錄」每日標題列：瀏覽器字號較大、地方唔夠時，刪除按鈕換行，唔會壓住日期（紀錄詳情頁嘅 .day-head 唔用，行為不變） */
+.day-head.wrap { flex-wrap: wrap; gap: 6px 10px; }
 .day-head .t { min-width: 0; }
 .day-head .t b { white-space: nowrap; }
 .day-head .btn { flex: none; white-space: nowrap; }
@@ -517,6 +593,18 @@ input:focus, textarea:focus {
 .rec-score { flex: none; font-weight: 800; padding: 2px 12px; border-radius: 999px; background: #DFF3E7; color: var(--green-d); }
 .rec-score.mid { background: #FFF0C2; color: #9A6B00; }
 .rec-score.low { background: #FFE1E3; color: var(--red-d); }
+.rec-score.inc { background: #EFE7DE; color: var(--text); }
+.rec-tag {
+  display: inline-block;
+  flex: none;
+  font-size: .75rem;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 2px dashed var(--muted);
+  color: var(--text);
+}
+.t .rec-tag { margin-top: 6px; }
 
 .word-row { display: flex; align-items: center; gap: 12px; padding: 8px 4px; border-top: 2px dashed var(--line); }
 .word-row:first-of-type { border-top: 0; }
@@ -533,7 +621,7 @@ input:focus, textarea:focus {
   background: var(--green);
 }
 .word-row.bad .mark { background: var(--red); }
-.word-row .wtxt { font-size: 1.6rem; font-weight: 800; letter-spacing: .08em; }
+.word-row .wtxt { font-family: var(--font-kai); font-size: 1.6rem; font-weight: 400; letter-spacing: .08em; }
 .badc { font-style: normal; color: #fff; background: var(--red); border-radius: 8px; padding: 0 4px; margin: 0 1px; }
 
 /* ---------- Modal ---------- */
@@ -557,10 +645,49 @@ input:focus, textarea:focus {
   text-align: center;
   box-shadow: 0 10px 0 rgba(0, 0, 0, .08);
   animation: pop .32s cubic-bezier(.3, 1.5, .5, 1);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
 }
 .modal .m-ico { font-size: 3.4rem; line-height: 1.2; }
 .modal p { color: var(--muted); font-size: .9rem; margin: 8px 0 4px; }
 .modal .two-btns .btn { min-height: 56px; font-size: 1.05rem; }
+.modal .two-btns.one, .modal .two-btns.three { grid-template-columns: 1fr; }
+.modal .two-btns.three .btn { min-height: 52px; }
+
+/* 分享課文：預覽、分享文字、複製掣 */
+.modal .sp-title { color: var(--text); font-size: 1rem; margin: 10px 0 6px; overflow-wrap: anywhere; }
+.modal .sp-title span { color: var(--muted); font-size: .9rem; }
+.share-preview {
+  max-height: 40dvh;
+  overflow-y: auto;
+  padding: 6px 12px;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  text-align: left;
+}
+.share-preview:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }
+.sp-row { padding: 6px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+.sp-row:last-child { border-bottom: 0; }
+.sp-word { font-family: var(--font-kai); font-size: 1.2rem; }
+.sp-hint { display: block; font-size: .8rem; color: var(--muted); }
+.modal textarea.share-text { min-height: 120px; max-height: 32dvh; font-size: 1rem; line-height: 1.6; text-align: left; margin-top: 8px; }
+.modal .copy-row { display: flex; gap: 10px; margin-top: 12px; }
+.modal .copy-row .btn { flex: 1; min-width: 0; }
+.modal .field-error { text-align: center; }
+.modal .merge-help { margin: 10px 0 4px; padding-left: 1.2em; text-align: left; color: var(--muted); font-size: .85rem; line-height: 1.6; }
+
+/* 家長 PIN（T5.4）：輸入框置中、等寬、字距 */
+.modal .field-label { text-align: left; margin: 14px 0 6px; }
+input.pin-input {
+  text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: .5em; text-indent: .5em; min-height: 48px; font-size: 1.4rem;
+}
+details.forgot-pin { margin-top: 14px; text-align: left; font-size: .9rem; }
+details.forgot-pin summary { cursor: pointer; font-weight: 700; padding: 6px 0; min-height: 32px; }
+details.forgot-pin ol { margin: 6px 0 4px; padding-left: 1.4em; line-height: 1.6; color: var(--muted); }
+details.forgot-pin p { margin: 4px 0 0; }
+.pin-state { margin-top: 12px; }
+.pin-note { overflow-wrap: anywhere; }
 
 /* ---------- FX ---------- */
 #fx { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 50; }
@@ -587,8 +714,8 @@ input:focus, textarea:focus {
 @keyframes chipPop { 0% { transform: scale(.88); } 60% { transform: scale(1.1); } 100% { transform: scale(1); } }
 @keyframes ripple { to { transform: scale(2.6); opacity: 0; } }
 @keyframes ring {
-  0% { box-shadow: 0 8px 0 var(--blue-d), 0 0 0 0 rgba(90, 169, 230, .55); }
-  100% { box-shadow: 0 8px 0 var(--blue-d), 0 0 0 30px rgba(90, 169, 230, 0); }
+  0% { box-shadow: 0 8px 0 var(--blue-d), 0 0 0 0 rgba(40, 120, 181, .55); }
+  100% { box-shadow: 0 8px 0 var(--blue-d), 0 0 0 30px rgba(40, 120, 181, 0); }
 }
 @keyframes dot { 0%, 100% { transform: translateY(0); opacity: .4; } 50% { transform: translateY(-5px); opacity: 1; } }
 @keyframes cardIn { from { opacity: 0; transform: translateX(44px); } to { opacity: 1; transform: translateX(0); } }
@@ -652,7 +779,7 @@ input:focus, textarea:focus {
 .count-box .field-label { text-align: left; }
 .icon-btn[disabled] { opacity: .35; pointer-events: none; }
 .count-val { min-width: 7em; }
-.count-val b { display: inline-block; font-size: 2.6rem; line-height: 1.1; color: var(--orange-d); }
+.count-val b { display: inline-block; font-size: 2.6rem; line-height: 1.1; color: var(--orange); }
 .count-val small { color: var(--muted); font-size: .9rem; }
 
 /* 詞語數量滑桿：左減右增，軌道填色風格同進度條一致 */
@@ -699,7 +826,7 @@ input:focus, textarea:focus {
   border: 3px solid var(--orange-d);
   box-shadow: 0 4px 0 var(--orange-d);
 }
-.range:focus-visible { outline: 3px solid rgba(255, 138, 61, .4); outline-offset: 2px; border-radius: 999px; }
+.range:focus-visible { outline: 3px solid rgba(196, 78, 10, .4); outline-offset: 2px; border-radius: 999px; }
 .range:disabled { opacity: .45; cursor: default; }
 
 /* 設定按鈕 */
@@ -732,3 +859,120 @@ input:focus, textarea:focus {
 .field-error { color: var(--red-d); font-weight: 700; margin-top: 8px; }
 .field-error[hidden] { display: none; }
 input[aria-invalid=true] { border-color: var(--red); }
+
+/* 首頁／主選單提示（備份提醒、加到主畫面）：溫和嘅黃色卡，字色用正文色（對比 ≥ 4.5:1） */
+.notice.reminder, .notice.a2hs { margin: 18px 0 0; font-size: .95rem; color: var(--text); }
+.notice p + p { margin-top: 4px; }
+.notice .how { color: var(--text); }
+.notice-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
+.notice-actions .link { padding: 10px 4px; min-height: 44px; }
+.notice small { font-size: .85rem; line-height: 1.6; display: inline-block; margin-top: 4px; }
+
+/* 設定頁：朗讀聲音下拉選單 */
+.voice-select {
+  width: 100%;
+  font: inherit;
+  font-size: 1rem;
+  padding: 10px 14px;
+  min-height: 48px;
+  border: 3px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--text);
+}
+.voice-select:focus-visible { outline: 3px solid rgba(196, 78, 10, .4); outline-offset: 2px; border-color: var(--orange); }
+
+/* ---------- 列印練習紙（T5.5）：預覽 dialog ---------- */
+.modal.print-modal { max-width: 760px; text-align: left; }
+.print-modal .m-ico { display: none; }
+.print-modal h3 { text-align: center; }
+.modal .pp-title { color: var(--text); font-size: 1rem; margin: 10px 0 2px; overflow-wrap: anywhere; }
+.modal .pp-title span { color: var(--muted); font-size: .9rem; }
+.pp-opts { display: flex; flex-wrap: wrap; gap: 0 18px; }
+.pp-group[hidden], .pp-nohint[hidden] { display: none; }
+.pp-group .field-label { margin: 10px 0 6px; font-size: .9rem; }
+.pp-opts .toggle-select { flex-wrap: wrap; gap: 8px; }
+.pp-opts .chip { flex: none; min-height: 44px; padding: 4px 14px; font-size: .9rem; white-space: nowrap; }
+.pp-opts .chip[disabled] { opacity: .45; pointer-events: none; }
+.modal .pp-nohint { margin: 4px 0 0; }
+.pp-preview {
+  margin-top: 12px;
+  min-height: 140px;
+  max-height: 42dvh;
+  overflow: auto;
+  padding: 10px;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+.pp-preview:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }
+.pp-preview-inner { min-width: 0; }
+.pp-preview .ps { --cell: 22px; font-size: 14px; }
+.pp-preview .ps-word { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.print-modal .two-btns { margin-top: 14px; }
+#printRoot { display: none; }
+
+/* ---------- 列印練習紙：紙面（預覽同列印共用）----------
+   格線全部用 border／偽元素 border，唔用 background／background-image，預設唔勾「背景圖形」都印得出；
+   紙面內冇 background、box-shadow、opacity、filter；文字純黑，只有描紅示範字用淺灰 */
+.ps { --cell: 12mm; color: #000; font-family: var(--font-ui); line-height: 1.3; }
+.ps p { margin: 0; }
+.ps-head { break-after: avoid; page-break-after: avoid; margin-bottom: 1em; }
+.ps .ps-title { color: #000; font-size: 1.5em; font-weight: 700; text-align: center; margin: 0 0 .6em; overflow-wrap: anywhere; }
+.ps .ps-meta { color: #000; display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3em 1em; font-size: 1em; margin: 0; }
+.ps-line { display: inline-block; min-width: 7em; border-bottom: 1px solid #000; font-style: normal; padding: 0 .3em; }
+.ps-list, .ps-alist { list-style: none; margin: 0; padding: 0; }
+.ps-word { display: block; break-inside: avoid; page-break-inside: avoid; margin: 0 0 .9em; }
+.ps-label { display: flex; align-items: baseline; gap: .6em; margin-bottom: .25em; }
+.ps-no { font-weight: 700; min-width: 1.6em; }
+.ps-lw { font-family: var(--font-kai); font-weight: 400; font-size: 1.3em; }
+.ps .ps-hint { font-size: .85em; color: #000; overflow-wrap: anywhere; }
+.ps-cells { display: flex; flex-wrap: wrap; gap: .4em .8em; }
+.ps-rep { display: flex; flex-wrap: wrap; flex: none; max-width: 100%; border-right: .75pt solid #000; }
+.tz { position: relative; box-sizing: border-box; display: block; flex: none; width: var(--cell); height: var(--cell); border: .75pt solid #000; border-right-width: 0; }
+.tz::before { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; border-left: .5pt dashed #ecd266; }
+.tz::after { content: ''; position: absolute; top: 50%; left: 0; right: 0; border-top: .5pt dashed #ecd266; }
+.tz-ch {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-kai); font-weight: 400; font-size: calc(var(--cell) * .72); line-height: 1;
+  color: #666;
+  /* 瀏覽器「省墨」模式會將淺色文字自動加深（實測 Chromium 將 #777 印成 #222，描紅變成同正文一樣黑）；
+     exact 保留淺灰。紙面冇背景，所以唔會令「背景圖形」相關設定有影響 */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.ps-dict { display: flex; align-items: center; gap: .6em; }
+.ps-ans { break-before: page; page-break-before: always; }
+.ps-alist { column-count: 2; column-gap: 2em; }
+.ps-alist li { break-inside: avoid; page-break-inside: avoid; padding: .2em 0; }
+.pp-preview .ps-ans { margin-top: 1.2em; padding-top: .8em; border-top: 1px dashed #000; }
+
+/* 窄螢幕：詞庫每課有「改」＋3 粒圖示掣，課文名佔成行，掣排第二行靠右，免得課文名被壓窄 */
+@media (max-width: 430px) {
+  .lesson-row { flex-wrap: wrap; }
+  .lesson-row .info { flex: 1 1 100%; }
+  .lesson-row .info + .btn { margin-left: auto; }
+}
+
+/* ---------- 列印：A4 直向，只印練習紙 ---------- */
+@page { size: A4 portrait; margin: 12mm 14mm; }
+@media print {
+  html, body { margin: 0 !important; padding: 0 !important; height: auto !important; min-height: 0 !important; background: none !important; color: #000 !important; }
+  /* 唔可以用 display:none 收埋其餘介面：瀏覽器列印／列印預覽重新分頁時會套用 print 媒體再還原（每次一個週期），
+     display:none 會銷毀 box，還原時 .modal-back／.modal／.view.enter 嘅入場動畫（fade／pop／slidein）重播，
+     預覽 dialog 就彈跳幾次。改用 visibility:hidden（唔出墨），box 保留，動畫唔會重播；
+     唯一佔位嘅 #app 另外收成高度 0（唔產生空白頁）。.modal-back／toast／#fx 係 fixed，唔佔位，版面唔郁，預覽尺寸同捲動位置都唔變。 */
+  body.is-printing > *:not(#printRoot) { visibility: hidden !important; }
+  /* 預覽紙面（螢幕示意）列印時唔會印，亦唔可以參與 print 版面：其 .ps-word 用 content-visibility:auto，
+     print 時會全部強制展開（高度由約 8300px 脹到 13000px+），還原時再逐幀縮返，預覽內容同捲動位置就會跳。
+     用 content-visibility:hidden 跳過子樹（容器 box 保留，尺寸沿用上次渲染嘅大細），唔用 display:none（會重設捲動位置）。 */
+  body.is-printing .pp-preview-inner { content-visibility: hidden; contain-intrinsic-size: auto 100000px; }   /* 用夠大嘅後備高度，保證 print 期間捲動位置唔會被夾短 */
+  body.is-printing > #app {
+    height: 0 !important; min-height: 0 !important; max-height: 0 !important;
+    margin: 0 !important; padding: 0 !important; border: 0 !important;
+    overflow: hidden !important;
+  }
+  body.is-printing #printRoot { display: block !important; }
+  body.is-printing .ps { --cell: 12mm; font-size: 12pt; }
+}
