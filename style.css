@@ -79,6 +79,10 @@ h3 { font-size: 1.15rem; }
 /* 編輯課文嘅詞語預覽：預留最少一行高度，輸入第一個詞語時唔會跳；太多詞語就喺框內捲動 */
 .word-preview { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; min-height: 52px; max-height: 11rem; overflow-y: auto; margin-top: 10px; }
 .word-preview .chip.word { min-height: 40px; padding: 2px 14px; font-size: 1.1rem; background: #FFF9E0; border-color: var(--yellow); }
+/* 提示句（T5.1）：預覽 chip 入面細字顯示；長句可以斷行，唔會撐闊版面 */
+.word-preview .chip.word { max-width: 100%; }
+.chip.word small.hint { font-weight: 400; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
+.hint-help { margin: -2px 0 8px; }
 
 /* 「睇答案」鎖定提示：永遠佔位 1.6em，文字出現／消失唔會推動版面 */
 .lock-hint { min-height: 1.6em; margin-top: 10px; color: var(--muted); font-size: .9rem; }
@@ -440,6 +444,8 @@ input:focus, textarea:focus {
   font-size: min(18vw, 110px, calc((100cqi - 22px) / (var(--n) * 1.1)));
   animation: answerIn .4s cubic-bezier(.3, 1.2, .5, 1);
 }
+/* 答案下面嘅提示句：介面字型（唔用楷書）、細字、muted 色 */
+.answer-hint { margin: 0 0 10px; font-family: var(--font-ui); font-size: .95rem; font-weight: 400; color: var(--muted); overflow-wrap: anywhere; }
 
 .two-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
 .two-btns .btn { min-height: 72px; font-size: 1.3rem; }
@@ -513,6 +519,7 @@ input:focus, textarea:focus {
 .score.inc { font-size: 1.5rem; color: var(--text); margin-top: 8px; }
 .result-section { margin-top: 20px; text-align: left; }
 .result-section h3 { margin-bottom: 8px; }
+.bank-left { margin-top: 14px; }
 
 /* ---------- Stats ---------- */
 .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center; }

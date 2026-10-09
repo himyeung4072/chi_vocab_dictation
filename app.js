@@ -27,12 +27,24 @@ const FEEDBACK_MS = 1200;  // 答啱／錯動畫顯示時間，播完先轉下�
 const SLOW_RATE = 0.45;    // 「慢啲再讀」嘅速度
 const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
 const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
+const HINT_MAX = 60;       // 提示句最多幾多個字（按字元計，超出截短）
+const HINT_GAP_MS = 500;   // 詞語讀完之後，等幾耐先讀提示句
+const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
+const BANK_COUNT_DEFAULT = 10;     // 錯字怪獸模式預設默幾多個錯字
 const HISTORY_MAX = 200;   // 每位同學最多保留幾多次默書紀錄
 const DAY_MS = 86400000;
 const BACKUP_REMIND_DAYS = 14;   // 超過幾多日未備份，就喺首頁提示
 const A2HS_KEY = STORE_KEY + '_a2hs_dismissed';   // 「加到主畫面」提示已關閉（只係呢部機，唔跟備份走）
 
 const WAIT_HTML = '<span class="dots"><i></i><i></i><i></i></span> 預備緊，聽到就開始寫';
+
+// 詞語解析用嘅 regex。要喺 loadDB() 之前宣告：載入時 cleanLessons 會用到（舊課文遷移）
+/* 詞語首尾嘅標點（只係首尾，詞語中間嘅字元唔掂；唔包含 | 同 ｜） */
+const EDGE_PUNCT = /^[。．.!?,、;:"'“”‘’「」『』()（）\[\]【】《》〈〉<>…]+|[。．.!?,、;:"'“”‘’「」『』()（）\[\]【】《》〈〉<>…]+$/g;
+/* 詞語分隔符：空白（包括換行）、逗號、頓號、分號、斜線。NFKC 後全形逗號／分號／斜線已變半形，兩種都列出嚟 */
+const WORD_SEP = /[\s,，、;；/／]+/;
+/* 詞語同提示句之間嘅分隔符：全形「｜」同半形「|」都接受（英文鍵盤多數只打到半形） */
+const HINT_SEP = /[|｜]/;
 
 const $app = document.getElementById('app');
 const $fx = document.getElementById('fx');
@@ -150,19 +162,42 @@ function normaliseInput(text) {
   return String(text).split('｜').map(function (p) { return p.normalize('NFKC'); }).join('｜');
 }
 
-/* 詞語首尾嘅標點（只係首尾，詞語中間嘅字元唔掂；唔包含 | 同 ｜） */
-const EDGE_PUNCT = /^[。．.!?,、;:"'“”‘’「」『』()（）\[\]【】《》〈〉<>…]+|[。．.!?,、;:"'“”‘’「」『』()（）\[\]【】《》〈〉<>…]+$/g;
+/* 提示句清理：非字串當冇；句內再有分隔符換成「，」（朗讀時停頓，唔會讀出「豎線」）；
+   連續空白（包括換行）變一個空格；最多 HINT_MAX 個字 */
+function cleanHint(x) {
+  if (typeof x !== 'string') return '';
+  const t = x.replace(/[|｜]/g, '，').replace(/\s+/g, ' ').trim();
+  const cut = Array.from(t).slice(0, HINT_MAX).join('').trim();
+  /* 冇任何文字或數字（例如只有「。」「，」）當冇提示句 */
+  return /[\p{L}\p{N}]/u.test(cut) ? cut : '';
+}
 
-/* 分隔符：空白（包括換行）、逗號、頓號、分號、斜線。NFKC 後全形逗號／分號／斜線已變半形，兩種都列出嚟 */
-function parseWords(text) {
+/* 解析課文輸入：返回 { words: [...], hints: { 詞語: 提示句 } }（hints 係無原型字典）。
+   冇分隔符嘅行：照舊用 WORD_SEP 拆多個詞。
+   有分隔符嘅行：只喺第一個「｜」／「|」拆開；左邊照舊拆詞，最後一個詞配提示句，前面嘅當普通詞語；
+   右邊成段係提示句，唔再拆。左邊冇詞就成行略過；右邊清理後係空就當冇提示句。
+   去重以詞語為準：位置跟第一次出現，提示句取第一個非空嘅 */
+function parseLesson(text) {
   const seen = new Set();   // 用 Set：詞語係 constructor、__proto__ 都唔會撞到物件原型
-  return normaliseInput(text).split(/[\s,，、;；/／]+/).map(function (w) {
-    return w.replace(EDGE_PUNCT, '').trim();
-  }).filter(function (w) {
-    if (!w || seen.has(w)) return false;
-    seen.add(w);
-    return true;
+  const words = [];
+  const hints = Object.create(null);
+  const add = function (w, hint) {
+    if (!w) return;
+    if (!seen.has(w)) { seen.add(w); words.push(w); }
+    if (hint && !hints[w]) hints[w] = hint;
+  };
+  const split = function (s) {
+    return s.split(WORD_SEP).map(function (w) { return w.replace(EDGE_PUNCT, '').trim(); }).filter(Boolean);
+  };
+  normaliseInput(text).split(/\r\n|\r|\n/).forEach(function (line) {
+    const at = line.search(HINT_SEP);
+    if (at === -1) { split(line).forEach(function (w) { add(w, ''); }); return; }
+    const left = split(line.slice(0, at));
+    if (!left.length) return;
+    const hint = cleanHint(line.slice(at + 1));
+    left.forEach(function (w, i) { add(w, i === left.length - 1 ? hint : ''); });
   });
+  return { words: words, hints: hints };
 }
 
 function shuffle(arr) {
@@ -228,13 +263,44 @@ function cleanWords(list) {
   return out;
 }
 
-/* app 儲存課文時最少要有一個詞（saveLesson 會檢查），清理後冇詞語嘅只可能係損壞資料，直接剔走 */
+/* 提示句對照表：只保留 words 入面有嘅詞，清理後非空先保留。返回無原型字典 */
+function cleanHints(obj, words) {
+  const out = Object.create(null);
+  if (!isObj(obj)) return out;
+  words.forEach(function (w) {
+    if (!hasKey(obj, w)) return;
+    const h = cleanHint(obj[w]);
+    if (h) out[w] = h;
+  });
+  return out;
+}
+
+/* app 儲存課文時最少要有一個詞（saveLesson 會檢查），清理後冇詞語嘅只可能係損壞資料，直接剔走。
+   l.hints（提示句對照表）：舊資料冇就係空表。
+   遷移：T2.6 之後、T5.1 之前儲存嘅課文，詞語可能包含「｜」／「|」（例如「公園｜我哋去公園玩」當咗一個詞），
+   喺第一個分隔符拆成詞語同提示句；課文原有嘅 hints 優先 */
 function cleanLessons(list) {
   if (!Array.isArray(list)) return [];
   return list.filter(function (l) {
     return isObj(l) && typeof l.id === 'string' && typeof l.title === 'string' && Array.isArray(l.words);
   }).map(function (l) {
-    l.words = cleanWords(l.words);
+    const migrated = Object.create(null);
+    const raw = l.words.map(function (w) {
+      if (typeof w !== 'string') return w;
+      const at = w.search(HINT_SEP);
+      if (at === -1) return w;
+      const word = w.slice(0, at).replace(EDGE_PUNCT, '').trim();
+      if (word && !migrated[word]) migrated[word] = w.slice(at + 1);
+      return word;
+    });
+    l.words = cleanWords(raw);
+    const merged = Object.create(null);
+    const own = isObj(l.hints) ? l.hints : null;
+    l.words.forEach(function (w) {
+      if (own && hasKey(own, w) && cleanHint(own[w])) merged[w] = own[w];
+      else if (migrated[w]) merged[w] = migrated[w];
+    });
+    l.hints = cleanHints(merged, l.words);
     return l;
   }).filter(function (l) { return l.words.length > 0; });
 }
@@ -291,6 +357,8 @@ function cleanBank(obj) {
     if (!isObj(v) || isNaN(numOr(v.need, NaN)) || isNaN(numOr(v.progress, NaN)) || !String(k).trim()) return;
     v.need = numOr(v.need, 1);
     v.progress = numOr(v.progress, 0);
+    // 上次默對嘅時間（入庫後未默對過就係入庫時間）；舊資料冇此欄位 → null，排序時當最耐冇默對
+    v.lastOkAt = cleanTimestamp(v.lastOkAt);
     out[k] = v;
   });
   return out;
@@ -332,10 +400,12 @@ function normaliseStudent(st) {
   st.bank = cleanBank(st.bank);
   st.history = cleanHistory(st.history);
   const pf = isObj(st.prefs) ? st.prefs : {};
+  const speed = hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal';
   st.prefs = {
     order: pf.order === 'random' ? 'random' : 'seq',
     lang: hasKey(LANGS, pf.lang) ? pf.lang : 'yue',
-    speed: hasKey(SPEEDS, pf.speed) ? pf.speed : 'normal',
+    speed: speed,
+    hintSpeed: hasKey(SPEEDS, pf.hintSpeed) ? pf.hintSpeed : speed,   // 提示句速度；舊資料／舊備份冇此欄位就跟朗讀速度
     lastLessonIds: cleanIds(pf.lastLessonIds),   // 上次默書揀嘅課文
     voiceURI: cleanVoiceURI(pf.voiceURI),        // 揀咗嘅朗讀聲音；空 = 自動
     shortcuts: pf.shortcuts !== false            // 默書鍵盤快捷鍵；只有明確 false 先關，舊資料／舊備份冇此欄位當開
@@ -375,15 +445,17 @@ function newStudent(name, grade, avatar) {
 }
 
 /* ---------- 畫面切換 ---------- */
-const timers = { speak: null, adv: null, lock: null };
+const timers = { speak: null, adv: null, lock: null, hint: null };
 
 function clearTimers() {
   clearTimeout(timers.speak);
   clearTimeout(timers.adv);
   clearTimeout(timers.lock);
+  clearTimeout(timers.hint);
   timers.speak = null;
   timers.adv = null;
   timers.lock = null;
+  timers.hint = null;
 }
 
 function stopSpeech() {
@@ -659,8 +731,10 @@ function confirmBox(opts, onOk, onCancel) {
    剔走後再默錯 → 再入庫，需要默對 2 次，如此類推。
    無論喺課文模式或者錯字怪獸模式，只要默對，庫內詞語就減一次。
    已經喺庫內又默錯 → 顯示嘅「×N」（need - progress）加 1，已默對嘅次數歸零。
+   lastOkAt：入庫時設為而家；喺庫內默對（未剔走）更新為而家；喺庫內默錯唔變。
    bad: 寫錯咗嘅字位置（0 開始），有揀先會計單字統計。 */
 function recordAnswer(s, word, ok, bad, quiz) {
+  const now = new Date().toISOString();
   const st = s.wordStats[word] || (s.wordStats[word] = { attempts: 0, wrong: 0, bankEntries: 0 });
   st.attempts += 1;
   if (!ok) st.wrong += 1;
@@ -682,6 +756,7 @@ function recordAnswer(s, word, ok, bad, quiz) {
       delete s.bank[word];
       quiz.removed.push(word);
     } else {
+      inBank.lastOkAt = now;
       quiz.hurt.push({ word: word, left: inBank.need - inBank.progress });
     }
   } else if (inBank) {
@@ -689,7 +764,7 @@ function recordAnswer(s, word, ok, bad, quiz) {
     inBank.progress = 0;
   } else {
     st.bankEntries += 1;
-    s.bank[word] = { need: st.bankEntries, progress: 0 };
+    s.bank[word] = { need: st.bankEntries, progress: 0, lastOkAt: now };
     quiz.added.push(word);
   }
 }
@@ -774,7 +849,11 @@ function announceScreen() {
   const q = ui.quiz;
   if (ui.view !== 'quiz' || !q) return;
   if (q.phase === 'listen') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 題');
-  else if (q.phase === 'answer') announce(q.words[q.idx]);   // 焦點喺「答案係」，跟住讀出答案
+  else if (q.phase === 'answer') {   // 焦點喺「答案係」，跟住讀出答案（有提示句一併讀）
+    const word = q.words[q.idx];
+    const hint = q.hints ? q.hints[word] || '' : '';
+    announce(word + (hint ? '。提示句：' + hint : ''));
+  }
   else if (q.phase === 'feedback') announce(q.fb.ok ? '答啱咗' : '答錯咗');
 }
 
@@ -964,10 +1043,26 @@ function lessonsView(s) {
     '<button class="btn green block" style="margin-top:20px" data-action="newLesson">➕ 新增一課</button>';
 }
 
-/* 編輯課文時嘅即時預覽：解析後嘅詞語 chips（詞語係用家輸入，一律 esc） */
-function wordPreviewHtml(list) {
-  if (!list.length) return '<span class="muted">輸入詞語後，呢度會顯示解析結果</span>';
-  return list.map(function (w) { return '<span class="chip word">' + esc(w) + '</span>'; }).join('');
+/* 課文轉返編輯框文字：一行一詞，有提示句嘅寫成「詞語｜提示句」 */
+function lessonText(l) {
+  return l.words.map(function (w) {
+    return l.hints && hasKey(l.hints, w) ? w + '｜' + l.hints[w] : w;
+  }).join('\n');
+}
+
+/* 編輯課文時嘅即時預覽：解析後嘅詞語 chips，有提示句就細字顯示（詞語同提示句係用家輸入，一律 esc） */
+function wordPreviewHtml(parsed) {
+  if (!parsed.words.length) return '<span class="muted">輸入詞語後，呢度會顯示解析結果</span>';
+  return parsed.words.map(function (w) {
+    const h = parsed.hints[w];
+    return '<span class="chip word">' + esc(w) + (h ? ' <small class="hint">' + esc(h) + '</small>' : '') + '</span>';
+  }).join('');
+}
+
+/* 「其中 M 個有提示句」；冇提示句就空字串 */
+function hintCountText(parsed) {
+  const m = parsed.words.filter(function (w) { return !!parsed.hints[w]; }).length;
+  return m > 0 ? '，其中 ' + m + ' 個有提示句' : '';
 }
 
 /* 編輯課文有冇未儲存改動：課文名或詞語同開啟時嘅內容唔同 */
@@ -981,18 +1076,28 @@ function editDirty() {
 function lessonEditView(s) {
   const lesson = ui.editLessonId ? s.lessons.find(function (l) { return l.id === ui.editLessonId; }) : null;
   const title = lesson ? lesson.title : '第' + (s.lessons.length + 1) + '課';
-  const words = lesson ? lesson.words.join('\n') : '';
+  const words = lesson ? lessonText(lesson) : '';
   ui.editBase = { title: title, words: words };   // 開啟時嘅內容，用嚟偵測有冇未儲存改動
-  const parsed = parseWords(words);
+  const parsed = parseLesson(words);
   return '<div class="topnav"><button class="back" data-action="leaveEdit">← 返回</button></div>' +
     '<div class="card"><h2>' + (lesson ? '修改課文' : '新增課文') + '</h2>' +
     '<label class="field-label" for="lessonTitle">課文名稱</label>' +
     '<input type="text" id="lessonTitle" maxlength="20" autocomplete="off" value="' + esc(title) + '">' +
     '<label class="field-label" for="lessonWords">詞語（一行一個，或者用逗號、空格、斜線分開）</label>' +
-    '<textarea id="lessonWords" placeholder="例如：&#10;蘋果&#10;香蕉&#10;西瓜">' + esc(words) + '</textarea>' +
-    '<p class="muted" style="margin-top:8px">共 <b id="wordCount">' + parsed.length + '</b> 個詞語（儲存時會自動去走頭尾標點同重複詞語）</p>' +
+    '<p class="muted hint-help" id="hintHelp">想加提示句：一行寫一個詞語，後面加「｜」（或者 |）再寫句子，例如「公園｜我哋去公園玩」。朗讀時會先讀詞語，再讀提示句；提示句最多 ' + HINT_MAX + ' 個字。</p>' +
+    '<textarea id="lessonWords" aria-describedby="hintHelp" placeholder="例如：&#10;蘋果&#10;公園｜我哋去公園玩&#10;西瓜">' + esc(words) + '</textarea>' +
+    '<p class="muted" style="margin-top:8px">共 <b id="wordCount">' + parsed.words.length + '</b> 個詞語<span id="hintCount">' + esc(hintCountText(parsed)) + '</span>（儲存時會自動去走頭尾標點同重複詞語）</p>' +
     '<div class="word-preview" id="wordPreview" role="group" aria-label="詞語預覽">' + wordPreviewHtml(parsed) + '</div>' +
     '<button class="btn green block" style="margin-top:18px" data-action="saveLesson">儲存 ✓</button></div>';
+}
+
+/* 「默幾多個」滑桿（課文同錯字怪獸模式共用）；數字由 refreshCount 即時填。label 係靜態文字 */
+function countBoxHtml(label) {
+  return '<div id="countBox" class="count-box">' +
+    '<span class="field-label" style="margin-top:6px">' + label + '</span>' +
+    '<div class="count-val"><b id="countNum"></b><small> / <span id="countMax">0</span> 個</small></div>' +
+    '<input type="range" id="countRange" class="range" min="1" max="1" step="1" value="1" aria-label="默書數量">' +
+    '<p class="muted center" id="countHint"></p></div>';
 }
 
 function setupView(s) {
@@ -1001,7 +1106,7 @@ function setupView(s) {
   const chip = function (key, val, label) {
     return '<button class="chip' + (c[key] === val ? ' on' : '') + '" data-action="setOpt" data-key="' + key + '" data-val="' + val + '"' + pressed(c[key] === val) + '>' + label + '</button>';
   };
-  const bankWords = Object.keys(s.bank);
+  const bankWords = bankQueue(s);   // 最耐冇默對嘅排最前，即係會先默嘅字
 
   let sourceBlock;
   if (c.source === 'bank') {
@@ -1011,9 +1116,9 @@ function setupView(s) {
       sourceBlock = '<p class="muted">默對就打敗怪獸。有啲字要默對幾次先剔走。</p><div class="chips" style="margin-top:10px">' +
         bankWords.map(function (w) {
           const b = s.bank[w];
-          return '<span class="chip word">' + esc(w) + ' <small class="muted">×' + (b.need - b.progress) + '</small>' +
+          return '<span class="chip word">' + esc(w) + ' <small class="muted">×' + Number(b.need - b.progress) + '</small>' +
             '<button class="chip-x" data-action="removeBank" data-word="' + esc(w) + '" aria-label="刪除「' + esc(w) + '」">✕</button></span>';
-        }).join('') + '</div>';
+        }).join('') + '</div>' + countBoxHtml('默幾多個錯字？');
     }
   } else if (!s.lessons.length) {
     sourceBlock = '<div class="empty"><span class="em">📝</span>仲未有課文，<br>請先去「我的詞庫」新增。</div>';
@@ -1024,11 +1129,7 @@ function setupView(s) {
         esc(l.title) + ' <small>(' + l.words.length + ')</small></button>';
     }).join('') + '</div>' +
       '<button class="link" data-action="allLessons">全選 / 取消全選</button>' +
-      '<div id="countBox" class="count-box">' +
-      '<span class="field-label" style="margin-top:6px">默幾多個詞語？</span>' +
-      '<div class="count-val"><b id="countNum">12</b><small> / <span id="countMax">0</span> 個</small></div>' +
-      '<input type="range" id="countRange" class="range" min="1" max="1" step="1" value="1" aria-label="默書詞語數量">' +
-      '<p class="muted center" id="countHint"></p></div>';
+      countBoxHtml('默幾多個詞語？');
   }
 
   const canStart = c.source === 'bank' ? bankWords.length > 0 : s.lessons.length > 0;
@@ -1071,6 +1172,9 @@ function settingsView(s) {
     '<p class="muted" style="margin-top:6px">默書時，每個詞語都可以隨時轉語言再聽。</p>' +
     '<span class="field-label">朗讀速度</span>' +
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
+    '<span class="field-label">提示句速度</span>' +
+    group('hintSpeed', Object.keys(SPEEDS).map(function (k) { return chip('hintSpeed', k, SPEEDS[k].label); }).join('')) +
+    '<p class="muted" style="margin-top:6px">詞語有提示句（例如「公園｜我哋去公園玩」）先會讀，喺詞語之後讀出。</p>' +
     '<span class="field-label" id="shortcutsLabel">鍵盤快捷鍵</span>' +
     '<div class="toggle-select" data-group="shortcuts" role="group" aria-labelledby="shortcutsLabel">' +
     shortcutChip(true, '開') + shortcutChip(false, '關') + '</div>' +
@@ -1112,12 +1216,28 @@ function initSetup(s, source) {
   let ids = s.prefs.lastLessonIds.filter(function (id) { return exists.has(id); });
   if (!ids.length && s.lessons.length) ids = [s.lessons[s.lessons.length - 1].id];
   ui.setup = {
-    source: source, lessonIds: ids, count: 12   // count: 12 = 預設；null = 全部詞語
+    source: source, lessonIds: ids, count: countDefault(source)   // count：數字 = 默幾多個；null = 全部
   };
 }
 
-/* 已揀課文入面嘅詞語總數（重複嘅詞語只計一次） */
+/* 「默幾多個」預設：課文模式 12、錯字怪獸模式 10 */
+function countDefault(source) {
+  return source === 'bank' ? BANK_COUNT_DEFAULT : LESSON_COUNT_DEFAULT;
+}
+
+/* 錯字怪獸出題次序：最耐冇默對（lastOkAt 最舊）排最前；冇 lastOkAt（舊資料）當最舊；同時間保持原本次序 */
+function bankQueue(s) {
+  return Object.keys(s.bank).map(function (w, i) {
+    const t = Date.parse(s.bank[w].lastOkAt);
+    return { w: w, i: i, t: Number.isFinite(t) ? t : -Infinity };
+  }).sort(function (a, b) {
+    return a.t === b.t ? a.i - b.i : (a.t < b.t ? -1 : 1);
+  }).map(function (x) { return x.w; });
+}
+
+/* 錯字怪獸模式：錯字總數；課文模式：已揀課文入面嘅詞語總數（重複嘅詞語只計一次） */
 function setupTotal(s, c) {
+  if (c.source === 'bank') return Object.keys(s.bank).length;
   const seen = new Set();
   s.lessons.forEach(function (l) {
     if (c.lessonIds.indexOf(l.id) === -1) return;
@@ -1144,8 +1264,21 @@ function refreshCount() {
   range.setAttribute('aria-valuetext', n === total && total > 0 ? '全部 ' + total + ' 個' : n + ' 個');
   range.style.setProperty('--pct', total > 1 ? ((n - 1) / (total - 1) * 100) + '%' : '100%');
 
-  document.getElementById('countHint').textContent = !total ? '先揀課文' :
-    n < total ? '由 ' + total + ' 個詞語入面隨機抽 ' + n + ' 個' : '默晒全部 ' + total + ' 個詞語';
+  document.getElementById('countHint').textContent = c.source === 'bank'
+    ? (!total ? '' : n < total ? '先默最耐冇默對嘅 ' + n + ' 個，尚餘 ' + (total - n) + ' 個錯字未溫' : '默晒全部 ' + total + ' 個錯字')
+    : (!total ? '先揀課文' : n < total ? '由 ' + total + ' 個詞語入面隨機抽 ' + n + ' 個' : '默晒全部 ' + total + ' 個詞語');
+}
+
+/* 詞語 → 提示句對照（無原型字典）：逐課逐詞，第一課有嘅優先 */
+function hintMap(lessons) {
+  const out = Object.create(null);
+  lessons.forEach(function (l) {
+    if (!l.hints) return;
+    l.words.forEach(function (w) {
+      if (!out[w] && hasKey(l.hints, w) && l.hints[w]) out[w] = l.hints[w];
+    });
+  });
+  return out;
 }
 
 /* 由全部詞語入面隨機抽 n 個；順序模式會跟返課文次序，亂序模式會打亂 */
@@ -1215,8 +1348,10 @@ function syncLockHint() {
 function answerHtml(q, word) {
   // 字號由 CSS 按答案框實際闊度計（--n = 字數），見 style.css .answer-box
   const n = Math.max(Array.from(word).length, 1);
+  const hint = q.hints ? q.hints[word] || '' : '';
   return '<p class="prompt" data-focus>答案係</p>' +
     '<div class="answer-wrap"><div class="answer-box" style="--n:' + n + '">' + esc(word) + '</div></div>' +
+    (hint ? '<p class="answer-hint">提示句：' + esc(hint) + '</p>' : '') +
     langSwitch(q) +
     '<div><button class="btn ghost small" data-action="speak">🔊 再聽一次</button></div>' +
     '<p class="prompt" style="margin-top:18px">你寫啱咗嗎？</p>' +
@@ -1323,6 +1458,9 @@ function resultView(s) {
       wordChips(r.hurt.map(function (h) { return h.word + '（' + h.left + '）'; })) + '</div>';
   }
   if (r.removed.length) extra += '<div class="result-section"><h3>🎉 打敗咗怪獸（已經記得）</h3>' + wordChips(r.removed) + '</div>';
+  if (typeof r.bankLeft === 'number' && r.bankLeft > 0) {
+    extra += '<p class="muted bank-left">尚餘 ' + Number(r.bankLeft) + ' 個錯字未溫，撳「再默一次」繼續打怪獸。</p>';
+  }
 
   const srTitle = r.incomplete ? '默書未完成：答咗 ' + r.total + ' / ' + r.planned + ' 題' :
     '默書完成：答啱 ' + r.correct + ' / ' + r.total + ' 題';
@@ -1502,14 +1640,23 @@ function setWaiting(on) {
   if (st) st.innerHTML = on ? WAIT_HTML : '';
 }
 
-/* 朗讀而家呢題，語言用學生為呢個詞語揀咗嘅語言 */
+/* 朗讀而家呢題，語言用學生為呢個詞語揀咗嘅語言。
+   有提示句：詞語讀完等 HINT_GAP_MS 再讀提示句（同一語言、同一把聲，語速用 hintSpeed）。
+   rate（「慢啲再讀」）有傳就詞語同提示句都用佢。「睇答案」喺詞語讀完就解鎖，唔使等提示句 */
 function speakCurrent(rate) {
   const q = ui.quiz;
   const idx = q.idx;
-  // 只處理「同一題」嘅朗讀事件，上一題遲來嘅完結訊號唔可以解鎖下一題
-  const same = function () { return ui.quiz === q && q.idx === idx; };
+  q.speakSeq = (q.speakSeq || 0) + 1;
+  const seq = q.speakSeq;
+  // 只處理「同一題、同一次朗讀」嘅事件：上一題遲來嘅完結訊號唔可以解鎖下一題，重聽後唔會讀到舊一次嘅提示句
+  const same = function () { return ui.quiz === q && q.idx === idx && q.speakSeq === seq; };
+  clearTimeout(timers.hint);
+  timers.hint = null;
+  const word = q.words[q.idx];
+  const hint = q.hints ? q.hints[word] || '' : '';
+  const hintRate = rate || SPEEDS[q.hintSpeed || q.speed].rate;
   setWaiting(false);   // 一開始朗讀，「預備緊」提示一定要走
-  speak(q.words[q.idx], q.curLang, rate || SPEEDS[q.speed].rate, {
+  speak(word, q.curLang, rate || SPEEDS[q.speed].rate, {
     onstart: function () {
       if (!same()) return;
       setWaiting(false);
@@ -1518,8 +1665,15 @@ function speakCurrent(rate) {
     onend: function () {
       if (!same()) return;
       setWaiting(false);
-      setSpeaking(false);
-      unlockReveal();   // 讀完先可以睇答案
+      unlockReveal();   // 詞語讀完先可以睇答案
+      if (!hint) { setSpeaking(false); return; }
+      timers.hint = setTimeout(function () {
+        timers.hint = null;
+        if (!same() || !canHear()) { setSpeaking(false); return; }
+        speak(hint, q.curLang, hintRate, {
+          onend: function () { if (same()) setSpeaking(false); }
+        });
+      }, HINT_GAP_MS);
     }
   });
   if (q.locked) {
@@ -1575,6 +1729,8 @@ function prepareQuestion(enter) {
   q.locked = true;      // 第一次朗讀播完之前，唔可以睇答案
   clearTimeout(timers.lock);
   timers.lock = null;
+  clearTimeout(timers.hint);   // 上一題未讀嘅提示句唔好帶入呢題
+  timers.hint = null;
 }
 
 function beginQuestion() {
@@ -1626,10 +1782,16 @@ function finishQuiz(s) {
   s.history.push(rec);
   if (s.history.length > HISTORY_MAX) s.history = s.history.slice(-HISTORY_MAX);
   saveDB();
+  // 錯字怪獸模式：庫內今次冇答過嘅錯字數（中途停止時未答嘅都計）；其他模式唔顯示
+  let bankLeft = null;
+  if (q.source === 'bank') {
+    const answered = new Set(q.results.map(function (r) { return r.word; }));
+    bankLeft = Object.keys(s.bank).filter(function (w) { return !answered.has(w); }).length;
+  }
   ui.result = {
     total: rec.total, planned: rec.planned, incomplete: rec.incomplete,
     correct: correct, wrong: wrong, recordId: rec.id,
-    added: q.added, removed: q.removed, hurt: q.hurt
+    added: q.added, removed: q.removed, hurt: q.hurt, bankLeft: bankLeft
   };
   go('result');
   const p = pct(correct, rec.total);
@@ -1744,12 +1906,12 @@ Object.assign(actions, {
   saveLesson: function () {
     const s = me();
     const title = document.getElementById('lessonTitle').value.trim();
-    const words = parseWords(document.getElementById('lessonWords').value);
+    const parsed = parseLesson(document.getElementById('lessonWords').value);
     if (!title) { toast('請輸入課文名稱'); return; }
-    if (!words.length) { toast('請最少輸入一個詞語'); return; }
+    if (!parsed.words.length) { toast('請最少輸入一個詞語'); return; }
     const existing = ui.editLessonId && s.lessons.find(function (l) { return l.id === ui.editLessonId; });
-    if (existing) { existing.title = title; existing.words = words; }
-    else { s.lessons.push({ id: uid(), title: title, words: words }); }
+    if (existing) { existing.title = title; existing.words = parsed.words; existing.hints = parsed.hints; }
+    else { s.lessons.push({ id: uid(), title: title, words: parsed.words, hints: parsed.hints }); }
     saveDB();
     toast('已儲存 ✓');
     actions.goLessons();
@@ -1761,6 +1923,8 @@ Object.assign(actions, {
   goSetup: function (el) { initSetup(me(), el.dataset.source); go('setup'); },
   setOpt: function (el) {
     const key = el.dataset.key;
+    // 轉「默邊度」：數量重設為新模式嘅預設（課文 12、錯字怪獸 10）
+    if (key === 'source' && ui.setup.source !== el.dataset.val) ui.setup.count = countDefault(el.dataset.val);
     ui.setup[key] = el.dataset.val;
     render();  // 內容唔同，要重畫
   },
@@ -1843,12 +2007,15 @@ Object.assign(actions, {
     const c = ui.setup;
     let words = [];
     let label = '';
+    let hints;
     if (c.source === 'bank') {
-      words = Object.keys(s.bank);
+      words = bankQueue(s);   // 最耐冇默對嘅排最前
       label = '錯字怪獸';
+      hints = hintMap(s.lessons);   // 錯字喺邊課有提示句都讀埋
     } else {
       const picked = s.lessons.filter(function (l) { return c.lessonIds.indexOf(l.id) !== -1; });
       if (!picked.length) { toast('請先揀最少一課'); return; }
+      hints = hintMap(picked);
       const seen = new Set();
       picked.forEach(function (l) {
         l.words.forEach(function (w) { if (!seen.has(w)) { seen.add(w); words.push(w); } });
@@ -1859,11 +2026,18 @@ Object.assign(actions, {
     }
     if (!words.length) { toast('冇詞語可以默'); return; }
     const total = words.length;
-    // 課文模式可以揀默幾多個：最少 1 個，最多係全部，超出嘅數字會被限制返
-    const n = c.source === 'lessons' && c.count != null ? Math.max(1, Math.min(c.count, total)) : total;
+    // 兩個模式都可以揀默幾多個：最少 1 個，最多係全部，超出嘅數字會被限制返
+    const n = c.count != null ? Math.max(1, Math.min(c.count, total)) : total;
     const p = s.prefs;   // 次序、朗讀語言、速度全部由設定頁讀取
-    words = pickWords(words, n, p.order);
-    if (n < total) label += '（抽 ' + n + ' 個）';
+    if (c.source === 'bank') {
+      // 錯字怪獸：攞最耐冇默對嘅頭 n 個（唔隨機抽）；亂序模式先打亂呢 n 個
+      words = words.slice(0, n);
+      if (p.order === 'random') words = shuffle(words);
+      if (n < total) label += '（先默 ' + n + ' 個）';
+    } else {
+      words = pickWords(words, n, p.order);
+      if (n < total) label += '（抽 ' + n + ' 個）';
+    }
     if (c.source === 'lessons') {   // 成功開始先記住今次揀嘅課文
       p.lastLessonIds = c.lessonIds.filter(function (id) { return s.lessons.some(function (l) { return l.id === id; }); });
       saveDB();
@@ -1871,7 +2045,8 @@ Object.assign(actions, {
     unlockSpeech();
     ui.quiz = {
       source: c.source, label: label, words: words, idx: 0, results: [],
-      added: [], removed: [], hurt: [], lang: p.lang, speed: p.speed, shown: 0
+      added: [], removed: [], hurt: [], lang: p.lang, speed: p.speed, shown: 0,
+      hints: hints, hintSpeed: p.hintSpeed
     };
     preloadAnswerFont(words);
     prepareQuestion(false);  // 第一題跟住畫面入場動畫，唔使再滑入
@@ -2032,9 +2207,10 @@ document.addEventListener('click', function (e) {
 document.addEventListener('input', function (e) {
   if (e.target.id === 'nameInput') ui.form.name = e.target.value;
   if (e.target.id === 'lessonWords') {
-    const list = parseWords(e.target.value);
-    document.getElementById('wordCount').textContent = list.length;
-    document.getElementById('wordPreview').innerHTML = wordPreviewHtml(list);
+    const parsed = parseLesson(e.target.value);
+    document.getElementById('wordCount').textContent = parsed.words.length;
+    document.getElementById('hintCount').textContent = hintCountText(parsed);
+    document.getElementById('wordPreview').innerHTML = wordPreviewHtml(parsed);
   }
   if (e.target.id === 'countRange' && ui.setup) {
     const total = setupTotal(me(), ui.setup);
