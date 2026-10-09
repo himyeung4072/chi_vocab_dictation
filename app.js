@@ -39,6 +39,8 @@ const SHARE_PAYLOAD_MAX = 20000; // 分享連結 #lesson= 後面最多幾多字�
 const SHARE_LESSONS_MAX = 100;   // 一位同學最多幾多課（只喺加入分享課文時檢查）
 const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
 const BANK_COUNT_DEFAULT = 10;     // 錯字怪獸模式預設默幾多個錯字
+const PRINT_CELLS = [2, 3, 4, 6];   // 列印：每字幾格（詞語重複寫幾次）
+const PRINT_DEFAULTS = { mode: 'practice', cells: 4, trace: true, hints: true, answers: true };
 const HISTORY_MAX = 200;   // 每位同學最多保留幾多次默書紀錄
 const DAY_MS = 86400000;
 const BACKUP_REMIND_DAYS = 14;   // 超過幾多日未備份，就喺首頁提示
@@ -148,7 +150,9 @@ let ui = {
   recordBack: 'history',
   voiceLang: null,       // 設定頁而家編輯緊邊個語言嘅聲音（只存記憶體，null = 跟預設朗讀語言）
   backupSnoozed: false,  // 撳咗「之後再講」：今次開 app 唔再提醒備份
-  pinUntil: 0            // 家長 PIN 解鎖到幾時（毫秒時間戳）；只存記憶體，重新整理即鎖
+  pinUntil: 0,           // 家長 PIN 解鎖到幾時（毫秒時間戳）；只存記憶體，重新整理即鎖
+  printOpts: null,       // 列印練習紙選項（只存記憶體；null = 用 PRINT_DEFAULTS）
+  print: null            // 目前開住嘅列印預覽快照 { model }；null = 冇開
 };
 
 /* ---------- 小工具 ---------- */
@@ -956,7 +960,10 @@ document.addEventListener('pointerdown', function (e) {
    - altText＋onAlt：第三粒掣（data-m="alt"），三粒掣時直向排
    - validate(back)：撳確定／輸入框內撳 Enter 時先行；回傳 true 先關閉並執行 onOk，
      回傳字串＝顯示喺 .field-error[role=alert]，dialog 不關，焦點返去第一個輸入框
-   - focusSel：開框時嘅初始焦點（預設係取消掣） */
+   - focusSel：開框時嘅初始焦點（預設係取消掣）
+   - wide：寬版 dialog（.modal 加 print-modal class，列印預覽用）
+   - keepOpen：撳確定時唔關框，只執行 onOk(back)（唔經 validate）；關閉一律走取消／Esc／背景＝onCancel
+   - onOpen(back)：dialog 加入頁面同初始焦點之後執行一次 */
 function confirmBox(opts, onOk, onCancel) {
   const opener = document.activeElement;   // 開框前嘅焦點，關閉時還原
   const back = document.createElement('div');
@@ -966,7 +973,7 @@ function confirmBox(opts, onOk, onCancel) {
   const noBtn = '<button class="btn ghost" data-m="no">取消</button>';
   const btns = opts.single ? okBtn : opts.altText ? okBtn + altBtn + noBtn : noBtn + okBtn;
   back.innerHTML =
-    '<div class="modal" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
+    '<div class="modal' + (opts.wide ? ' print-modal' : '') + '" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
     '<div class="m-ico">' + (opts.icon || '❓') + '</div>' +
     '<h3>' + esc(opts.title) + '</h3><p>' + esc(opts.text || '') + '</p>' +
     (opts.bodyHtml || '') +
@@ -1000,6 +1007,7 @@ function confirmBox(opts, onOk, onCancel) {
   }
   /* 有 validate：未通過就喺框內顯示原因，唔關框 */
   function submit() {
+    if (opts.keepOpen) { onOk(back); return; }
     if (opts.validate) {
       const r = opts.validate(back);
       if (r !== true) {
@@ -1042,6 +1050,7 @@ function confirmBox(opts, onOk, onCancel) {
   document.body.appendChild(back);
   const first = (opts.focusSel && back.querySelector(opts.focusSel)) || back.querySelector('[data-m=no]') || back.querySelector('[data-m=yes]');
   if (first) first.focus();
+  if (opts.onOpen) opts.onOpen(back);
 }
 
 /* ---------- 錯字怪獸規則 ----------
@@ -1388,6 +1397,205 @@ function menuView(s) {
     '<div class="footer-links"><button class="link danger" data-action="deleteStudent">刪除呢位同學</button></div>';
 }
 
+/* ---------- 列印練習紙（T5.5） ----------
+   列印唔改資料：唔 saveDB、唔寫 localStorage、唔需要 PIN；選項只存 ui.printOpts（記憶體）。
+   紙面（printSheetHtml）同時寫入預覽同 #printRoot（同一份 HTML）；所有資料值經 esc()／Number() */
+function printOpts() {
+  const o = Object.assign({}, PRINT_DEFAULTS, ui.printOpts || {});
+  return {
+    mode: o.mode === 'dictation' ? 'dictation' : 'practice',
+    cells: PRINT_CELLS.indexOf(o.cells) !== -1 ? o.cells : PRINT_DEFAULTS.cells,
+    trace: o.trace !== false,
+    hints: o.hints !== false,
+    answers: o.answers !== false
+  };
+}
+
+/* 列印快照：{ title, words, hints(無原型字典), hasHints, studentName, source }；搵唔到課文或者冇詞語就 null */
+function printModel(s, src, id) {
+  if (!s) return null;
+  let title, words, hints;
+  if (src === 'bank') {
+    title = '錯字';
+    words = bankQueue(s);
+    hints = hintMap(s.lessons);
+  } else {
+    const l = s.lessons.find(function (x) { return x.id === id; });
+    if (!l) return null;
+    title = l.title;
+    words = l.words.slice();
+    hints = Object.create(null);
+    if (l.hints) {
+      words.forEach(function (w) { if (hasKey(l.hints, w) && l.hints[w]) hints[w] = String(l.hints[w]); });
+    }
+  }
+  if (!words.length) return null;
+  return {
+    title: title,
+    words: words,
+    hints: hints,
+    hasHints: words.some(function (w) { return !!hints[w]; }),
+    studentName: s.name || '',
+    source: src === 'bank' ? 'bank' : 'lesson'
+  };
+}
+
+/* 詞語拆字（逐 code point，唔拆 surrogate pair），去掉空白 */
+function charCells(word) {
+  return Array.from(String(word)).filter(function (c) { return !/\s/.test(c); });
+}
+
+function cellHtml(ch, trace) {
+  return '<span class="tz">' + (trace ? '<b class="tz-ch">' + esc(ch) + '</b>' : '') + '</span>';
+}
+
+/* 一次詞語＝一組格（組內唔斷行） */
+function repHtml(chars, trace) {
+  return '<span class="ps-rep">' + chars.map(function (c) { return cellHtml(c, trace); }).join('') + '</span>';
+}
+
+function printSheetHtml(m, o) {
+  const dict = o.mode === 'dictation';
+  const total = Number(m.words.length);
+  const kind = dict ? '默書紙' : '練習紙';
+  const title = (m.source === 'bank' ? '錯字' : esc(m.title) + '　') + kind;
+  const head =
+    '<div class="ps-head"><p class="ps-title">' + title + '</p>' +
+    '<p class="ps-meta"><span>姓名：<i class="ps-line">' + esc(m.studentName || '') + '</i></span>' +
+    '<span>日期：<i class="ps-line"></i></span>' +
+    '<span>分數：<i class="ps-line"></i> ／ ' + total + '</span></p></div>';
+  const hintOf = function (w) { return m.hints && hasKey(m.hints, w) && m.hints[w] ? String(m.hints[w]) : ''; };
+  const items = m.words.map(function (w, i) {
+    const no = '<span class="ps-no">' + Number(i + 1) + '</span>';
+    const chars = charCells(w);
+    if (dict) {
+      return '<li class="ps-word ps-dict">' + no + '<div class="ps-cells">' + repHtml(chars, false) + '</div></li>';
+    }
+    const h = o.hints ? hintOf(w) : '';
+    const reps = [];
+    for (let k = 0; k < o.cells; k++) reps.push(repHtml(chars, o.trace && k === 0));
+    return '<li class="ps-word"><div class="ps-label">' + no + '<span class="ps-lw">' + esc(w) + '</span>' +
+      (h ? '<small class="ps-hint">' + esc(h) + '</small>' : '') + '</div>' +
+      '<div class="ps-cells">' + reps.join('') + '</div></li>';
+  }).join('');
+  let ans = '';
+  if (dict && o.answers) {
+    ans = '<div class="ps-ans"><p class="ps-title">答案（家長用）</p><ol class="ps-alist">' +
+      m.words.map(function (w, i) {
+        const h = o.hints ? hintOf(w) : '';
+        return '<li><span class="ps-no">' + Number(i + 1) + '</span> <span class="ps-lw">' + esc(w) + '</span>' +
+          (h ? ' <small class="ps-hint">' + esc(h) + '</small>' : '') + '</li>';
+      }).join('') + '</ol></div>';
+  }
+  return '<div class="ps ' + (dict ? 'ps-dictation' : 'ps-practice') + '">' + head +
+    '<ol class="ps-list">' + items + '</ol>' + ans + '</div>';
+}
+
+/* 選項組：一列 chip（沿用 .chip＋aria-pressed），狀態由 refreshPrint 更新 */
+function ppGroup(key, label, items) {
+  return '<div class="pp-group" data-opt="' + key + '"><span class="field-label" id="ppL-' + key + '">' + label + '</span>' +
+    '<div class="toggle-select" role="group" aria-labelledby="ppL-' + key + '">' +
+    items.map(function (it) {
+      return '<button type="button" class="chip" data-action="printOpt" data-key="' + key + '" data-val="' + esc(it[0]) +
+        '" aria-pressed="false">' + it[1] + '</button>';
+    }).join('') + '</div></div>';
+}
+
+function printDialogBodyHtml(m) {
+  return '<p class="pp-title"><b>' + esc(m.source === 'bank' ? '錯字怪獸清單' : m.title) + '</b>　<span>共 ' + Number(m.words.length) + ' 個詞語</span></p>' +
+    '<div class="pp-opts">' +
+    ppGroup('mode', '紙張', [['practice', '✏️ 練習紙'], ['dictation', '📝 默書紙']]) +
+    ppGroup('cells', '每字幾格', PRINT_CELLS.map(function (n) { return [String(n), n + ' 格']; })) +
+    ppGroup('trace', '描紅示範字', [['1', '有'], ['0', '冇']]) +
+    ppGroup('hints', '提示句', [['1', '附上'], ['0', '唔附']]) +
+    ppGroup('answers', '附答案頁', [['1', '附上'], ['0', '唔附']]) +
+    '</div><p class="muted pp-nohint" hidden>呢批詞語冇提示句</p>' +
+    '<p class="sr-only" id="ppSummary" role="status" aria-live="polite"></p>' +
+    '<div class="pp-preview" tabindex="0" role="group" aria-label="預覽（示意）"><div class="pp-preview-inner" aria-hidden="true"></div></div>';
+}
+
+/* 重畫預覽同 #printRoot（同一份 HTML），並更新選項狀態；唔重建 dialog，焦點唔會跳 */
+function refreshPrint() {
+  if (!ui.print) return;
+  const m = ui.print.model;
+  const o = printOpts();
+  const dict = o.mode === 'dictation';
+  const html = printSheetHtml(m, o);
+  const inner = document.querySelector('.pp-preview-inner');
+  const root = document.getElementById('printRoot');
+  if (inner) inner.innerHTML = html;
+  if (root) root.innerHTML = html;
+  document.querySelectorAll('.print-modal [data-action=printOpt]').forEach(function (btn) {
+    const key = btn.dataset.key;
+    const cur = key === 'mode' ? o.mode : key === 'cells' ? String(o.cells) : (o[key] ? '1' : '0');
+    const on = cur === btn.dataset.val;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (key === 'hints') btn.disabled = !m.hasHints;
+  });
+  const hide = { cells: dict, trace: dict, answers: !dict };
+  document.querySelectorAll('.print-modal .pp-group').forEach(function (g) {
+    g.hidden = !!hide[g.dataset.opt];
+  });
+  const nh = document.querySelector('.print-modal .pp-nohint');
+  if (nh) nh.hidden = m.hasHints;
+  const sum = document.getElementById('ppSummary');
+  if (sum) {
+    sum.textContent = '共 ' + m.words.length + ' 個詞語' + (dict ? '（默書紙' + (o.answers ? '，附答案頁' : '') + '）' : '，每字 ' + o.cells + ' 格');
+  }
+  preloadAnswerFont(m.words);
+}
+
+function closePrint() {
+  const r = document.getElementById('printRoot');
+  if (r) r.remove();
+  document.body.classList.remove('is-printing');
+  ui.print = null;
+}
+
+/* 先等楷書字體載入（最多 1.5 秒）再印，免得列印出後備字體 */
+function doPrint() {
+  const m = ui.print && ui.print.model;
+  if (!m) return;
+  const go = function () {
+    if (!ui.print) return;   // 等字體期間 dialog 已關
+    try { window.print(); } catch (e) { toast('列印唔到，請用瀏覽器選單列印'); }
+  };
+  try {
+    if (document.fonts && document.fonts.load) {
+      Promise.race([
+        document.fonts.load('400 1em "Free HK Kai"', m.words.join('')),
+        new Promise(function (r) { setTimeout(r, 1500); })
+      ]).catch(function () {}).then(go);
+    } else {
+      go();
+    }
+  } catch (e) {
+    toast('列印唔到，請用瀏覽器選單列印');
+  }
+}
+
+function openPrintDialog(src, id) {
+  const m = printModel(me(), src, id);
+  if (!m) { toast('冇詞語可以列印'); return; }
+  if (document.querySelector('.modal-back')) return;
+  ui.print = { model: m };
+  const old = document.getElementById('printRoot');
+  if (old) old.remove();
+  const root = document.createElement('div');
+  root.id = 'printRoot';
+  document.body.appendChild(root);
+  document.body.classList.add('is-printing');
+  confirmBox({
+    icon: '🖨️', title: '列印預覽',
+    text: '先睇預覽，再撳「列印」。預覽只係示意，實際分行同分頁以瀏覽器列印預覽為準。',
+    okText: '🖨️ 列印', wide: true, keepOpen: true,
+    bodyHtml: printDialogBodyHtml(m),
+    focusSel: '[data-action=printOpt]',
+    onOpen: refreshPrint
+  }, doPrint, closePrint);
+}
+
 function lessonsView(s) {
   let body;
   if (!s.lessons.length) {
@@ -1398,6 +1606,7 @@ function lessonsView(s) {
         '<div class="preview">' + esc(l.words.join('　')) + '</div></div>' +
         '<button class="btn ghost small" data-action="editLesson" data-id="' + esc(l.id) + '">改</button>' +
         '<button class="icon-btn" data-action="shareLesson" data-id="' + esc(l.id) + '" aria-label="分享課文">📤</button>' +
+        '<button class="icon-btn" data-action="printLesson" data-id="' + esc(l.id) + '" aria-label="列印「' + esc(l.title) + '」練習紙">🖨️</button>' +
         '<button class="icon-btn" data-action="deleteLesson" data-id="' + esc(l.id) + '" aria-label="刪除課文">🗑</button></div>';
     }).join('');
   }
@@ -1644,6 +1853,9 @@ function setupView(s) {
     '<span class="field-label">默邊度？</span>' +
     group('source', chip('source', 'lessons', '📚 課文') + chip('source', 'bank', '👾 錯字怪獸')) +
     '<div style="margin-top:14px">' + sourceBlock + '</div></div>' +
+    (c.source === 'bank'
+      ? '<button class="btn ghost small block" style="margin-top:12px" data-action="printBank"' + (bankWords.length ? '' : ' disabled') + ' aria-label="列印錯字練習紙">🖨️ 列印錯字練習紙</button>'
+      : '') +
     '<button class="btn block" style="margin-top:20px;min-height:68px;font-size:1.3rem"' + (canStart ? '' : ' disabled') + ' data-action="startQuiz">開始默書 🚀</button>';
 }
 
@@ -2459,6 +2671,32 @@ Object.assign(actions, {
     pumpShare();
   },
   cancelShare: function () { discardShare(); render(); }
+});
+
+/* ---------- 列印練習紙（T5.5）：唔改資料，唔經 guarded（唔需要 PIN） ---------- */
+Object.assign(actions, {
+  printLesson: function (el) { openPrintDialog('lesson', el.dataset.id); },
+  printBank: function () { openPrintDialog('bank'); },
+  printOpt: function (el) {
+    if (!ui.print) return;
+    const key = el.dataset.key;
+    const val = el.dataset.val;
+    const o = Object.assign({}, ui.printOpts || {});
+    if (key === 'mode') {
+      if (val !== 'practice' && val !== 'dictation') return;
+      o.mode = val;
+    } else if (key === 'cells') {
+      const n = Number(val);
+      if (PRINT_CELLS.indexOf(n) === -1) return;
+      o.cells = n;
+    } else if (key === 'trace' || key === 'hints' || key === 'answers') {
+      o[key] = val === '1';
+    } else {
+      return;
+    }
+    ui.printOpts = o;
+    refreshPrint();
+  }
 });
 
 /* ---------- 默書 ---------- */

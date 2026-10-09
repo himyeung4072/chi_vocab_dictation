@@ -881,3 +881,98 @@ input[aria-invalid=true] { border-color: var(--red); }
   color: var(--text);
 }
 .voice-select:focus-visible { outline: 3px solid rgba(196, 78, 10, .4); outline-offset: 2px; border-color: var(--orange); }
+
+/* ---------- 列印練習紙（T5.5）：預覽 dialog ---------- */
+.modal.print-modal { max-width: 760px; text-align: left; }
+.print-modal .m-ico { display: none; }
+.print-modal h3 { text-align: center; }
+.modal .pp-title { color: var(--text); font-size: 1rem; margin: 10px 0 2px; overflow-wrap: anywhere; }
+.modal .pp-title span { color: var(--muted); font-size: .9rem; }
+.pp-opts { display: flex; flex-wrap: wrap; gap: 0 18px; }
+.pp-group[hidden], .pp-nohint[hidden] { display: none; }
+.pp-group .field-label { margin: 10px 0 6px; font-size: .9rem; }
+.pp-opts .toggle-select { flex-wrap: wrap; gap: 8px; }
+.pp-opts .chip { flex: none; min-height: 44px; padding: 4px 14px; font-size: .9rem; white-space: nowrap; }
+.pp-opts .chip[disabled] { opacity: .45; pointer-events: none; }
+.modal .pp-nohint { margin: 4px 0 0; }
+.pp-preview {
+  margin-top: 12px;
+  min-height: 140px;
+  max-height: 42dvh;
+  overflow: auto;
+  padding: 10px;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+}
+.pp-preview:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }
+.pp-preview-inner { min-width: 0; }
+.pp-preview .ps { --cell: 22px; font-size: 14px; }
+.pp-preview .ps-word { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.print-modal .two-btns { margin-top: 14px; }
+#printRoot { display: none; }
+
+/* ---------- 列印練習紙：紙面（預覽同列印共用）----------
+   格線全部用 border／偽元素 border，唔用 background／background-image，預設唔勾「背景圖形」都印得出；
+   紙面內冇 background、box-shadow、opacity、filter；文字純黑，只有描紅示範字用淺灰 */
+.ps { --cell: 12mm; color: #000; font-family: var(--font-ui); line-height: 1.3; }
+.ps p { margin: 0; }
+.ps-head { break-after: avoid; page-break-after: avoid; margin-bottom: 1em; }
+.ps .ps-title { color: #000; font-size: 1.5em; font-weight: 700; text-align: center; margin: 0 0 .6em; overflow-wrap: anywhere; }
+.ps .ps-meta { color: #000; display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3em 1em; font-size: 1em; margin: 0; }
+.ps-line { display: inline-block; min-width: 7em; border-bottom: 1px solid #000; font-style: normal; padding: 0 .3em; }
+.ps-list, .ps-alist { list-style: none; margin: 0; padding: 0; }
+.ps-word { display: block; break-inside: avoid; page-break-inside: avoid; margin: 0 0 .9em; }
+.ps-label { display: flex; align-items: baseline; gap: .6em; margin-bottom: .25em; }
+.ps-no { font-weight: 700; min-width: 1.6em; }
+.ps-lw { font-family: var(--font-kai); font-weight: 400; font-size: 1.3em; }
+.ps .ps-hint { font-size: .85em; color: #000; overflow-wrap: anywhere; }
+.ps-cells { display: flex; flex-wrap: wrap; gap: .4em .8em; }
+.ps-rep { display: flex; flex-wrap: wrap; flex: none; max-width: 100%; border-right: .75pt solid #000; }
+.tz { position: relative; box-sizing: border-box; display: block; flex: none; width: var(--cell); height: var(--cell); border: .75pt solid #000; border-right-width: 0; }
+.tz::before { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; border-left: .5pt dashed #ecd266; }
+.tz::after { content: ''; position: absolute; top: 50%; left: 0; right: 0; border-top: .5pt dashed #ecd266; }
+.tz-ch {
+  position: absolute; inset: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-kai); font-weight: 400; font-size: calc(var(--cell) * .72); line-height: 1;
+  color: #666;
+  /* 瀏覽器「省墨」模式會將淺色文字自動加深（實測 Chromium 將 #777 印成 #222，描紅變成同正文一樣黑）；
+     exact 保留淺灰。紙面冇背景，所以唔會令「背景圖形」相關設定有影響 */
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+.ps-dict { display: flex; align-items: center; gap: .6em; }
+.ps-ans { break-before: page; page-break-before: always; }
+.ps-alist { column-count: 2; column-gap: 2em; }
+.ps-alist li { break-inside: avoid; page-break-inside: avoid; padding: .2em 0; }
+.pp-preview .ps-ans { margin-top: 1.2em; padding-top: .8em; border-top: 1px dashed #000; }
+
+/* 窄螢幕：詞庫每課有「改」＋3 粒圖示掣，課文名佔成行，掣排第二行靠右，免得課文名被壓窄 */
+@media (max-width: 430px) {
+  .lesson-row { flex-wrap: wrap; }
+  .lesson-row .info { flex: 1 1 100%; }
+  .lesson-row .info + .btn { margin-left: auto; }
+}
+
+/* ---------- 列印：A4 直向，只印練習紙 ---------- */
+@page { size: A4 portrait; margin: 12mm 14mm; }
+@media print {
+  html, body { margin: 0 !important; padding: 0 !important; height: auto !important; min-height: 0 !important; background: none !important; color: #000 !important; }
+  /* 唔可以用 display:none 收埋其餘介面：瀏覽器列印／列印預覽重新分頁時會套用 print 媒體再還原（每次一個週期），
+     display:none 會銷毀 box，還原時 .modal-back／.modal／.view.enter 嘅入場動畫（fade／pop／slidein）重播，
+     預覽 dialog 就彈跳幾次。改用 visibility:hidden（唔出墨），box 保留，動畫唔會重播；
+     唯一佔位嘅 #app 另外收成高度 0（唔產生空白頁）。.modal-back／toast／#fx 係 fixed，唔佔位，版面唔郁，預覽尺寸同捲動位置都唔變。 */
+  body.is-printing > *:not(#printRoot) { visibility: hidden !important; }
+  /* 預覽紙面（螢幕示意）列印時唔會印，亦唔可以參與 print 版面：其 .ps-word 用 content-visibility:auto，
+     print 時會全部強制展開（高度由約 8300px 脹到 13000px+），還原時再逐幀縮返，預覽內容同捲動位置就會跳。
+     用 content-visibility:hidden 跳過子樹（容器 box 保留，尺寸沿用上次渲染嘅大細），唔用 display:none（會重設捲動位置）。 */
+  body.is-printing .pp-preview-inner { content-visibility: hidden; contain-intrinsic-size: auto 100000px; }   /* 用夠大嘅後備高度，保證 print 期間捲動位置唔會被夾短 */
+  body.is-printing > #app {
+    height: 0 !important; min-height: 0 !important; max-height: 0 !important;
+    margin: 0 !important; padding: 0 !important; border: 0 !important;
+    overflow: hidden !important;
+  }
+  body.is-printing #printRoot { display: block !important; }
+  body.is-printing .ps { --cell: 12mm; font-size: 12pt; }
+}
