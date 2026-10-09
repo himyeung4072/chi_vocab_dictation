@@ -216,7 +216,7 @@ button { font: inherit; color: inherit; cursor: pointer; border: 0; background: 
 
 .field-label { font-weight: 700; margin: 18px 0 8px; display: block; }
 
-input[type=text], textarea {
+input[type=text], input[type=password], textarea {
   width: 100%;
   font: inherit;
   font-size: 1.2rem;
@@ -643,10 +643,49 @@ input:focus, textarea:focus {
   text-align: center;
   box-shadow: 0 10px 0 rgba(0, 0, 0, .08);
   animation: pop .32s cubic-bezier(.3, 1.5, .5, 1);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
 }
 .modal .m-ico { font-size: 3.4rem; line-height: 1.2; }
 .modal p { color: var(--muted); font-size: .9rem; margin: 8px 0 4px; }
 .modal .two-btns .btn { min-height: 56px; font-size: 1.05rem; }
+.modal .two-btns.one, .modal .two-btns.three { grid-template-columns: 1fr; }
+.modal .two-btns.three .btn { min-height: 52px; }
+
+/* 分享課文：預覽、分享文字、複製掣 */
+.modal .sp-title { color: var(--text); font-size: 1rem; margin: 10px 0 6px; overflow-wrap: anywhere; }
+.modal .sp-title span { color: var(--muted); font-size: .9rem; }
+.share-preview {
+  max-height: 40dvh;
+  overflow-y: auto;
+  padding: 6px 12px;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  text-align: left;
+}
+.share-preview:focus-visible { outline: 3px solid var(--orange); outline-offset: 2px; }
+.sp-row { padding: 6px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+.sp-row:last-child { border-bottom: 0; }
+.sp-word { font-family: var(--font-kai); font-size: 1.2rem; }
+.sp-hint { display: block; font-size: .8rem; color: var(--muted); }
+.modal textarea.share-text { min-height: 120px; max-height: 32dvh; font-size: 1rem; line-height: 1.6; text-align: left; margin-top: 8px; }
+.modal .copy-row { display: flex; gap: 10px; margin-top: 12px; }
+.modal .copy-row .btn { flex: 1; min-width: 0; }
+.modal .field-error { text-align: center; }
+.modal .merge-help { margin: 10px 0 4px; padding-left: 1.2em; text-align: left; color: var(--muted); font-size: .85rem; line-height: 1.6; }
+
+/* 家長 PIN（T5.4）：輸入框置中、等寬、字距 */
+.modal .field-label { text-align: left; margin: 14px 0 6px; }
+input.pin-input {
+  text-align: center; font-family: ui-monospace, Menlo, Consolas, monospace;
+  letter-spacing: .5em; text-indent: .5em; min-height: 48px; font-size: 1.4rem;
+}
+details.forgot-pin { margin-top: 14px; text-align: left; font-size: .9rem; }
+details.forgot-pin summary { cursor: pointer; font-weight: 700; padding: 6px 0; min-height: 32px; }
+details.forgot-pin ol { margin: 6px 0 4px; padding-left: 1.4em; line-height: 1.6; color: var(--muted); }
+details.forgot-pin p { margin: 4px 0 0; }
+.pin-state { margin-top: 12px; }
+.pin-note { overflow-wrap: anywhere; }
 
 /* ---------- FX ---------- */
 #fx { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 50; }

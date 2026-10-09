@@ -28,6 +28,13 @@ const SLOW_RATE = 0.45;    // 「慢啲再讀」嘅速度
 const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
 const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
 const HINT_MAX = 60;       // 提示句最多幾多個字（按字元計，超出截短）
+const PIN_UNLOCK_MS = 5 * 60 * 1000;   // 家長 PIN 解鎖後幾耐內唔使再輸入（滑動窗口，每次成功操作順延）
+const TITLE_MAX = 20;      // 課文名最多幾多個字（同編輯頁 maxlength 一致）
+const WORD_MAX = 30;       // 分享課文：單個詞語最多幾多個字（超出拒收）
+const SHARE_WORDS_MAX = 100;     // 分享課文：最多幾多個詞語（超出拒收）
+const SHARE_TEXT_MAX = 5000;     // 分享課文：文字最多幾多個字（超出拒收）
+const SHARE_PAYLOAD_MAX = 20000; // 分享連結 #lesson= 後面最多幾多字元（中文 UTF-8 每字 3 byte，base64 約 4 字元）
+const SHARE_LESSONS_MAX = 100;   // 一位同學最多幾多課（只喺加入分享課文時檢查）
 const HINT_GAP_MS = 500;   // 詞語讀完之後，等幾耐先讀提示句
 const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
 const BANK_COUNT_DEFAULT = 10;     // 錯字怪獸模式預設默幾多個錯字
@@ -96,7 +103,7 @@ function backupRaw(raw) {
 function loadDB() {
   let raw = null;
   try { raw = localStorage.getItem(STORE_KEY); } catch (e) { /* 瀏覽器唔畀讀，當作冇資料 */ }
-  if (!raw) return { students: [], currentId: null, lastBackupAt: null };
+  if (!raw) return { students: [], currentId: null, lastBackupAt: null, parentPin: null };
   let data = null;
   try { data = normaliseDB(JSON.parse(raw), true); } catch (e) { /* JSON 壞咗或者搵唔到同學資料 */ }
   if (!data || data.dropped) {
@@ -104,8 +111,8 @@ function loadDB() {
     loadNotice = (data ? '有 ' + data.dropped + ' 位同學嘅資料讀唔到，已經略過。' : '資料讀唔到，而家由空白開始。') +
       (saved ? '原始資料已經另外備份咗。' : '而且備份唔到原始資料，可能係儲存空間唔夠。');
   }
-  if (!data) return { students: [], currentId: null, lastBackupAt: null };
-  return { students: data.students, currentId: data.currentId, lastBackupAt: data.lastBackupAt };   // 唔好將 dropped 存入 db
+  if (!data) return { students: [], currentId: null, lastBackupAt: null, parentPin: null };
+  return { students: data.students, currentId: data.currentId, lastBackupAt: data.lastBackupAt, parentPin: data.parentPin };   // 唔好將 dropped 存入 db
 }
 
 function saveDB() {
@@ -133,11 +140,13 @@ let ui = {
   editLessonId: null,
   setup: null,
   quiz: null,
+  share: null,   // 等緊確認加入嘅分享課文（已經 validateSharedLesson 清理過；唔存起）
   result: null,
   statTab: 'word',
   recordId: null,
   recordBack: 'history',
-  backupSnoozed: false   // 撳咗「之後再講」：今次開 app 唔再提醒備份
+  backupSnoozed: false,  // 撳咗「之後再講」：今次開 app 唔再提醒備份
+  pinUntil: 0            // 家長 PIN 解鎖到幾時（毫秒時間戳）；只存記憶體，重新整理即鎖
 };
 
 /* ---------- 小工具 ---------- */
@@ -198,6 +207,72 @@ function parseLesson(text) {
     left.forEach(function (w, i) { add(w, i === left.length - 1 ? hint : ''); });
   });
   return { words: words, hints: hints };
+}
+
+/* ---------- 分享課文（T5.3） ----------
+   分享文字：第一行「【課文】課文名」，之後一行一詞（有提示句寫成「詞語｜提示句」，即 lessonText）。
+   分享連結：<頁面網址>#lesson=<分享文字嘅 UTF-8，URL-safe base64>。
+   貼文字同開連結行同一條 parseSharedText → validateSharedLesson 路徑 */
+const SHARE_HEAD = /^【課文】\s*(.*)$/;
+
+function shareLessonText(l) {
+  return '【課文】' + l.title + '\n' + lessonText(l);
+}
+
+/* 分享文字 → { title, words, hints }（未校驗長度，由 validateSharedLesson 負責）。
+   第一個非空行係「【課文】」開頭就當課文名，其餘交畀 parseLesson；冇標題行就用「匯入課文」 */
+function parseSharedText(text) {
+  const lines = String(text).split(/\r\n|\r|\n/);
+  let at = 0;
+  while (at < lines.length && !lines[at].trim()) at += 1;
+  let title = '匯入課文';
+  let rest = lines;
+  const m = at < lines.length ? SHARE_HEAD.exec(lines[at].trim()) : null;
+  if (m) {
+    const t = m[1].replace(/\s+/g, ' ').trim();
+    if (t) title = Array.from(t).slice(0, TITLE_MAX).join('').trim();
+    rest = lines.slice(at + 1);
+  }
+  const parsed = parseLesson(rest.join('\n'));
+  return { title: title, words: parsed.words, hints: parsed.hints };
+}
+
+/* 文字 → URL-safe base64（UTF-8；+/ 換 -_，去 =） */
+function encodeShare(text) {
+  const bytes = new TextEncoder().encode(String(text));
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/* URL-safe（或者一般）base64 → 文字；格式錯、超長、非法 UTF-8 一律 throw 畀用家睇嘅原因 */
+function decodeShare(b64) {
+  const s = String(b64).trim();
+  if (s.length > SHARE_PAYLOAD_MAX) throw new Error('分享內容太長（連結最多 ' + SHARE_PAYLOAD_MAX + ' 個字元）');
+  if (!/^[A-Za-z0-9_\-+/]*={0,2}$/.test(s)) throw new Error('連結格式唔正確');
+  const std = s.replace(/=+$/, '').replace(/-/g, '+').replace(/_/g, '/');
+  let bin;
+  try { bin = atob(std + '==='.slice((std.length + 3) % 4)); } catch (e) { throw new Error('連結格式唔正確'); }
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch (e) { throw new Error('連結內容讀唔到（文字編碼唔正確）'); }
+}
+
+/* 分享文字 → 已清理嘅課文 { id, title, words, hints }；唔合格 throw。
+   超長一律拒收（唔截短，免得靜靜雞丟資料）；詞語同提示句交畀 parseLesson／cleanLessons（同 T1.2 同一條校驗） */
+function validateSharedLesson(text) {
+  if (typeof text !== 'string' || !text.trim()) throw new Error('冇內容，請貼上分享嘅課文');
+  if (text.length > SHARE_TEXT_MAX) throw new Error('課文太長（最多 ' + SHARE_TEXT_MAX + ' 個字）');
+  const p = parseSharedText(text);
+  if (!p.words.length) throw new Error('呢段內容入面搵唔到詞語');
+  if (p.words.length > SHARE_WORDS_MAX) throw new Error('詞語太多（一課最多 ' + SHARE_WORDS_MAX + ' 個）');
+  const longW = p.words.find(function (w) { return Array.from(w).length > WORD_MAX; });
+  if (longW !== undefined) throw new Error('有詞語太長（最多 ' + WORD_MAX + ' 個字）：' + Array.from(longW).slice(0, 10).join('') + '…');
+  const out = cleanLessons([{ id: uid(), title: p.title, words: p.words, hints: p.hints }]);
+  if (!out.length) throw new Error('呢段內容唔係有效嘅課文');
+  return out[0];
 }
 
 function shuffle(arr) {
@@ -391,6 +466,86 @@ function cleanVoiceURI(x) {
   return typeof x === 'string' && x.length > 0 && x.length <= 200 ? x : '';
 }
 
+/* ---------- 家長 PIN（T5.4） ----------
+   只係防止小朋友誤撳，唔係真正保安：4 位數字只有一萬種組合。
+   純 JS 同步 SHA-256（唔用 crypto.subtle：佢只喺 HTTPS／localhost 有，
+   如果 PIN 喺 https 設定、之後用 file:// 開就驗證唔到，會鎖死用家）。 */
+const SHA_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
+function sha256Hex(str) {
+  const bytes = new TextEncoder().encode(String(str));
+  const bitLen = bytes.length * 8;
+  const total = (bytes.length + 9 + 63) & ~63;   // 補 0x80、至少 8 byte 長度，湊夠 64 byte 倍數
+  const buf = new Uint8Array(total);
+  buf.set(bytes);
+  buf[bytes.length] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(total - 8, Math.floor(bitLen / 0x100000000), false);
+  dv.setUint32(total - 4, bitLen >>> 0, false);
+  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  const W = new Array(64);
+  const rotr = function (x, n) { return (x >>> n) | (x << (32 - n)); };
+  for (let off = 0; off < total; off += 64) {
+    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(W[i - 15], 7) ^ rotr(W[i - 15], 18) ^ (W[i - 15] >>> 3);
+      const s1 = rotr(W[i - 2], 17) ^ rotr(W[i - 2], 19) ^ (W[i - 2] >>> 10);
+      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) | 0;
+    }
+    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + SHA_K[i] + W[i]) | 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+  return H.map(function (x) { return ('00000000' + (x >>> 0).toString(16)).slice(-8); }).join('');
+}
+
+function randomHex(nBytes) {
+  const out = new Uint8Array(nBytes);
+  try { crypto.getRandomValues(out); }
+  catch (e) { for (let i = 0; i < nBytes; i++) out[i] = Math.floor(Math.random() * 256); }
+  return Array.prototype.map.call(out, function (x) { return ('0' + x.toString(16)).slice(-2); }).join('');
+}
+
+/* 建立 PIN 紀錄：{ v, salt(32 位 hex), hash(64 位 hex) }，hash = SHA-256(salt + ':' + pin)；冇明文 PIN */
+function makePin(pin) {
+  const salt = randomHex(16);
+  return { v: 1, salt: salt, hash: sha256Hex(salt + ':' + pin) };
+}
+
+function checkPin(rec, pin) {
+  return !!rec && sha256Hex(rec.salt + ':' + String(pin)) === rec.hash;
+}
+
+/* 讀外來 parentPin：格式唔啱一律當冇 PIN（null） */
+function cleanPin(x) {
+  if (!isObj(x) || x.v !== 1) return null;
+  if (typeof x.salt !== 'string' || !/^[0-9a-f]{16,64}$/i.test(x.salt)) return null;
+  if (typeof x.hash !== 'string' || !/^[0-9a-f]{64}$/i.test(x.hash)) return null;
+  return { v: 1, salt: x.salt.toLowerCase(), hash: x.hash.toLowerCase() };
+}
+
+function pinUnlocked() { return Date.now() < ui.pinUntil; }
+function unlockPin() { ui.pinUntil = Date.now() + PIN_UNLOCK_MS; }
+function lockPin() { ui.pinUntil = 0; }
+
 function normaliseStudent(st) {
   st.id = String(st.id);
   st.name = String(st.name);
@@ -436,8 +591,84 @@ function normaliseDB(data, lenient) {
     students: students,
     currentId: ids.indexOf(data.currentId) !== -1 ? data.currentId : null,
     lastBackupAt: cleanTimestamp(data.lastBackupAt),   // 舊資料、舊備份冇此欄位 → null
+    parentPin: cleanPin(data.parentPin),               // 冇此欄位 = 冇 PIN。注意：匯入備份時呼叫者會明確忽略呢個值
     dropped: dropped
   };
+}
+
+/* 合併還原：將備份（incoming，已經 normaliseDB 校驗）嘅資料併入現有資料（cur），唔刪任何現有嘢。
+   返回 { students, added: { students, lessons, records, bank, conflicts } }。
+   喺深複製上做，任何一步 throw 都唔會影響 cur（原子）；呼叫者成功後先將 students 寫返 db。
+   規則：
+   1. 同學按 id 對應；備份有、現有冇＝原樣加入；現有有、備份冇＝唔掂。唔按名字對應。
+   2. 同 id 同學：名、年級、頭像、prefs 一律保留現有。
+   3. 課文：內容（課文名＋詞語＋提示句）完全相同＝略過；同 id 但內容唔同＝保留現有，備份版另存新 id、課文名加「（合併）」；其餘加入。
+   4. 紀錄：按 id 只加現有冇嘅，按日期排序，超過 HISTORY_MAX 丟最舊（丟咗嘅唔入、唔計統計）；
+      只重播新加入紀錄嘅統計，現有統計絕不覆蓋、不重複計。
+   5. 錯字怪獸：只加現有冇嘅字，現有條目保留。 */
+function mergeDB(cur, incoming) {
+  const clone = function (students) {
+    return normaliseDB(JSON.parse(JSON.stringify({ students: students }))).students;
+  };
+  const work = clone(cur.students);
+  const inc = clone(incoming.students);
+  const added = { students: 0, lessons: 0, records: 0, bank: 0, conflicts: 0 };
+  const lessonKey = function (l) { return l.title + '\n' + lessonText(l); };
+  const byId = new Map();
+  work.forEach(function (st) { byId.set(st.id, st); });
+
+  inc.forEach(function (is) {
+    const cs = byId.get(is.id);
+    if (!cs) {
+      work.push(is);
+      byId.set(is.id, is);
+      added.students += 1;
+      added.lessons += is.lessons.length;
+      added.records += is.history.length;
+      added.bank += Object.keys(is.bank).length;
+      return;
+    }
+    // 課文
+    const keys = new Set(cs.lessons.map(lessonKey));
+    is.lessons.forEach(function (l) {
+      if (keys.has(lessonKey(l))) return;
+      let add = l;
+      if (cs.lessons.some(function (x) { return x.id === l.id; })) {
+        const t = Array.from(l.title).slice(0, TITLE_MAX - 4).join('') + '（合併）';
+        add = { id: uid(), title: t, words: l.words, hints: l.hints };
+        if (keys.has(lessonKey(add))) return;   // 上次合併已經另存過
+        added.conflicts += 1;
+      }
+      cs.lessons.push(add);
+      keys.add(lessonKey(add));
+      added.lessons += 1;
+    });
+    // 紀錄
+    const hids = new Set(cs.history.map(function (h) { return h.id; }));
+    const fresh = is.history.filter(function (h) {
+      if (hids.has(h.id)) return false;
+      hids.add(h.id);
+      return true;
+    });
+    if (fresh.length) {
+      const all = cs.history.concat(fresh).sort(function (a, b) { return Date.parse(a.date) - Date.parse(b.date); });
+      const keep = all.slice(Math.max(0, all.length - HISTORY_MAX));
+      const kept = new Set(keep);
+      fresh.forEach(function (h) {
+        if (!kept.has(h)) return;
+        applyRecordStats(cs, h);
+        added.records += 1;
+      });
+      cs.history = keep;
+    }
+    // 錯字怪獸
+    Object.keys(is.bank).forEach(function (w) {
+      if (hasKey(cs.bank, w)) return;
+      cs.bank[w] = is.bank[w];
+      added.bank += 1;
+    });
+  });
+  return { students: work, added: added };
 }
 
 function newStudent(name, grade, avatar) {
@@ -669,22 +900,37 @@ document.addEventListener('pointerdown', function (e) {
 
 /* ---------- 確認框 ----------
    opts: { icon, title, text, okText, danger }；撳確定先會執行 onOk
-   onCancel（可選）：撳取消、撳背景或者 Esc 關閉時執行 */
+   onCancel（可選）：撳取消、撳背景或者 Esc 關閉時執行
+   可選擴充（共用 dialog，現有呼叫唔使理）：
+   - bodyHtml：插喺說明文字後面嘅 HTML。呼叫者要自己確保裡面所有資料值已經 esc() 過
+   - single：只出一粒確定掣（Esc／背景＝關閉，會執行 onCancel）
+   - altText＋onAlt：第三粒掣（data-m="alt"），三粒掣時直向排
+   - validate(back)：撳確定／輸入框內撳 Enter 時先行；回傳 true 先關閉並執行 onOk，
+     回傳字串＝顯示喺 .field-error[role=alert]，dialog 不關，焦點返去第一個輸入框
+   - focusSel：開框時嘅初始焦點（預設係取消掣） */
 function confirmBox(opts, onOk, onCancel) {
   const opener = document.activeElement;   // 開框前嘅焦點，關閉時還原
   const back = document.createElement('div');
   back.className = 'modal-back';
+  const okBtn = '<button class="btn ' + (opts.danger ? 'red' : 'green') + '" data-m="yes">' + esc(opts.okText || '確定') + '</button>';
+  const altBtn = opts.altText ? '<button class="btn ghost" data-m="alt">' + esc(opts.altText) + '</button>' : '';
+  const noBtn = '<button class="btn ghost" data-m="no">取消</button>';
+  const btns = opts.single ? okBtn : opts.altText ? okBtn + altBtn + noBtn : noBtn + okBtn;
   back.innerHTML =
     '<div class="modal" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
     '<div class="m-ico">' + (opts.icon || '❓') + '</div>' +
     '<h3>' + esc(opts.title) + '</h3><p>' + esc(opts.text || '') + '</p>' +
-    '<div class="two-btns"><button class="btn ghost" data-m="no">取消</button>' +
-    '<button class="btn ' + (opts.danger ? 'red' : 'green') + '" data-m="yes">' + esc(opts.okText || '確定') + '</button>' +
+    (opts.bodyHtml || '') +
+    (opts.validate ? '<div class="field-error" role="alert" hidden></div>' : '') +
+    '<div class="two-btns' + (opts.single ? ' one' : opts.altText ? ' three' : '') + '">' + btns +
     '</div></div>';
 
-  /* Tab／Shift+Tab 只喺框內兩粒按鈕之間循環；焦點跑咗出框（例如撳咗空白位）就拉返入框 */
+  /* Tab／Shift+Tab 只喺框內可操作元素（按鈕、輸入框、summary、連結）之間循環；焦點跑咗出框（例如撳咗空白位）就拉返入框 */
   function trapTab(e) {
-    const btns = back.querySelectorAll('button');
+    const btns = Array.prototype.filter.call(
+      back.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea, summary, a[href]'),
+      function (x) { return x.getClientRects().length > 0; }
+    );
     if (!btns.length) return;
     const first = btns[0];
     const last = btns[btns.length - 1];
@@ -698,6 +944,25 @@ function confirmBox(opts, onOk, onCancel) {
     if (e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); return; }
     if (e.key === 'Escape') dismiss();
     else if (e.key === 'Tab') trapTab(e);
+    else if (e.key === 'Enter' && opts.validate && !e.isComposing && e.target && e.target.tagName === 'INPUT' && back.contains(e.target)) {
+      e.preventDefault();   // 輸入框內撳 Enter ＝ 撳確定
+      submit();
+    }
+  }
+  /* 有 validate：未通過就喺框內顯示原因，唔關框 */
+  function submit() {
+    if (opts.validate) {
+      const r = opts.validate(back);
+      if (r !== true) {
+        const err = back.querySelector('.field-error');
+        const inp = back.querySelector('input, textarea');
+        if (err) { err.textContent = String(r || ''); err.hidden = false; }
+        if (inp) { inp.setAttribute('aria-invalid', 'true'); inp.focus(); }
+        return;
+      }
+    }
+    close();
+    onOk();
   }
   function close() {
     document.removeEventListener('keydown', onKey);
@@ -706,6 +971,8 @@ function confirmBox(opts, onOk, onCancel) {
     if (opener && opener !== document.body && document.contains(opener) && typeof opener.focus === 'function') {
       opener.focus({ preventScroll: true });
     }
+    // dialog 開住期間收到分享連結（hashchange）會暫時唔彈預覽；關咗之後補彈（onOk／onCancel 之後先行，有新 dialog 就唔彈）
+    if (ui.share) setTimeout(pumpShare, 0);
   }
   function dismiss() {
     close();
@@ -715,15 +982,17 @@ function confirmBox(opts, onOk, onCancel) {
   back.addEventListener('click', function (e) {
     const b = e.target.closest('[data-m]');
     if (b) {
-      if (b.dataset.m === 'yes') { close(); onOk(); } else dismiss();
+      if (b.dataset.m === 'yes') submit();
+      else if (b.dataset.m === 'alt') { close(); if (opts.onAlt) opts.onAlt(); }
+      else dismiss();
     } else if (e.target === back) {
       dismiss();
     }
   });
   document.addEventListener('keydown', onKey);
   document.body.appendChild(back);
-  const cancel = back.querySelector('[data-m=no]');
-  if (cancel) cancel.focus();
+  const first = (opts.focusSel && back.querySelector(opts.focusSel)) || back.querySelector('[data-m=no]') || back.querySelector('[data-m=yes]');
+  if (first) first.focus();
 }
 
 /* ---------- 錯字怪獸規則 ----------
@@ -788,6 +1057,35 @@ function undoStats(s, rec) {
       Array.from(r.word).forEach(function (ch, i) {
         if (/\s/.test(ch)) return;
         dec(s.charStats, ch, !r.ok && bad.indexOf(i) !== -1);
+      });
+    }
+  });
+}
+
+/* 合併還原時，將新加入嘅一次紀錄計入詞語同單字統計（undoStats 嘅對稱版）。
+   唔掂錯字怪獸，亦唔加 bankEntries（錯字怪獸入庫次數只靠真實默書累積） */
+function applyRecordStats(s, rec) {
+  const inc = function (obj, key, wrong) {
+    const st = obj[key] || (obj[key] = { attempts: 0, wrong: 0 });
+    st.attempts += 1;
+    if (wrong) st.wrong += 1;
+  };
+  const incWord = function (key, wrong) {
+    const st = s.wordStats[key] || (s.wordStats[key] = { attempts: 0, wrong: 0, bankEntries: 0 });
+    st.attempts += 1;
+    if (wrong) st.wrong += 1;
+  };
+  if (!rec.results) {   // 舊版紀錄只知道錯咗邊啲詞語
+    (rec.wrong || []).forEach(function (w) { incWord(w, true); });
+    return;
+  }
+  rec.results.forEach(function (r) {
+    incWord(r.word, !r.ok);
+    const bad = r.bad || [];
+    if (r.ok || bad.length) {
+      Array.from(r.word).forEach(function (ch, i) {
+        if (/\s/.test(ch)) return;
+        inc(s.charStats, ch, !r.ok && bad.indexOf(i) !== -1);
       });
     }
   });
@@ -858,12 +1156,13 @@ function announceScreen() {
 }
 
 function render() {
+  setTimeout(pumpShare, 0);   // 有等緊確認嘅分享課文，畫面畫好後彈預覽
   const sig = focusSig(document.activeElement);
   const s = me();
   if (ui.view !== 'home' && ui.view !== 'add' && !s) ui.view = 'home';
   const views = {
     home: homeView, add: addView, menu: menuView, lessons: lessonsView,
-    lessonEdit: lessonEditView, setup: setupView, settings: settingsView, quiz: quizView,
+    lessonEdit: lessonEditView, lessonImport: lessonImportView, setup: setupView, settings: settingsView, quiz: quizView,
     result: resultView, stats: statsView, history: historyView, record: recordView
   };
   // 只有換畫面先播入場動畫，畫面內更新唔會閃
@@ -932,11 +1231,25 @@ function backupReminderHtml() {
     '<button class="link" data-action="snoozeBackup">之後再講</button></div></div>';
 }
 
+/* 設定頁「家長模式」卡片：設定／更改／移除 4 位數字 PIN（靜態文字，冇外來資料） */
+function parentCardHtml() {
+  const on = !!db.parentPin;
+  return '<div class="card" style="margin-top:16px"><h2>家長模式</h2>' +
+    '<p class="muted">設定 PIN 後，刪除紀錄、刪除錯字、修改詞庫、刪除同學同加入分享課文，都要先輸入 4 位數字 PIN。輸入後 5 分鐘內唔使再輸入；換人、開始默書或者離開 app 就會即刻重新上鎖。</p>' +
+    '<p class="muted pin-note" style="margin-top:6px">' + esc(PIN_DISCLAIMER) + '</p>' +
+    (on
+      ? '<p class="pin-state"><b>✅ 已啟用</b></p>' +
+        '<div class="two-btns"><button class="btn blue small" data-action="changePin">更改 PIN</button>' +
+        '<button class="btn ghost small" data-action="removePin">移除 PIN</button></div>'
+      : '<button class="btn blue small" style="margin-top:12px" data-action="setPin">設定 PIN</button>') +
+    '</div>';
+}
+
 /* 設定頁「資料備份」卡片：上次備份幾日前 + 立即備份 */
 function backupCardHtml() {
   return '<div class="card" style="margin-top:16px"><h2>資料備份</h2>' +
     '<p id="backupAge">上次備份：' + backupAgeText() + '</p>' +
-    '<p class="muted" style="margin-top:6px">資料只存喺呢部機嘅瀏覽器入面，建議定期備份。</p>' +
+    '<p class="muted" style="margin-top:6px">資料只存喺呢部機嘅瀏覽器入面，建議定期備份。備份檔唔包括家長 PIN。</p>' +
     '<button class="btn blue small" style="margin-top:12px" data-action="exportData">備份資料</button></div>';
 }
 
@@ -963,7 +1276,7 @@ function a2hsTipHtml() {
 
 /* 首頁同主選單共用：單人使用時直接入主選單，所以兩個畫面都要有 */
 function homeNoticesHtml() {
-  return backupReminderHtml() + a2hsTipHtml();
+  return shareWaitHtml() + backupReminderHtml() + a2hsTipHtml();
 }
 
 function homeView() {
@@ -1035,12 +1348,24 @@ function lessonsView(s) {
       return '<div class="lesson-row"><div class="info"><b>' + esc(l.title) + '</b> <span class="muted">' + l.words.length + ' 個詞</span>' +
         '<div class="preview">' + esc(l.words.join('　')) + '</div></div>' +
         '<button class="btn ghost small" data-action="editLesson" data-id="' + esc(l.id) + '">改</button>' +
+        '<button class="icon-btn" data-action="shareLesson" data-id="' + esc(l.id) + '" aria-label="分享課文">📤</button>' +
         '<button class="icon-btn" data-action="deleteLesson" data-id="' + esc(l.id) + '" aria-label="刪除課文">🗑</button></div>';
     }).join('');
   }
   return '<div class="topnav"><button class="back" data-action="goMenu">← 返回</button></div>' +
     '<div class="card"><h2>我的詞庫</h2>' + body + '</div>' +
-    '<button class="btn green block" style="margin-top:20px" data-action="newLesson">➕ 新增一課</button>';
+    '<button class="btn green block" style="margin-top:20px" data-action="newLesson">➕ 新增一課</button>' +
+    '<button class="btn ghost block" style="margin-top:12px" data-action="goLessonImport">📥 匯入課文</button>';
+}
+
+/* 匯入分享課文頁：貼分享文字或者成條連結，撳「預覽」先睇內容，確認先會加入 */
+function lessonImportView() {
+  return '<div class="topnav"><button class="back" data-action="goLessons">← 返回</button></div>' +
+    '<div class="card"><h2>匯入課文</h2>' +
+    '<label class="field-label" for="importText">貼上朋友分享嘅課文文字或者連結</label>' +
+    '<p class="muted hint-help" id="importHelp">貼上之後撳「預覽」，睇清楚內容先決定加唔加入詞庫，唔會自動加入。</p>' +
+    '<textarea id="importText" aria-describedby="importHelp" placeholder="【課文】第一課&#10;蘋果&#10;公園｜我哋去公園玩"></textarea>' +
+    '<button class="btn green block" style="margin-top:18px" data-action="previewImport">預覽</button></div>';
 }
 
 /* 課文轉返編輯框文字：一行一詞，有提示句嘅寫成「詞語｜提示句」 */
@@ -1048,6 +1373,134 @@ function lessonText(l) {
   return l.words.map(function (w) {
     return l.hints && hasKey(l.hints, w) ? w + '｜' + l.hints[w] : w;
   }).join('\n');
+}
+
+/* ---------- 分享課文：複製、預覽、加入 ---------- */
+/* 複製文字：有 navigator.clipboard 就用，失敗或者冇就轉 execCommand 後備（揀中 textarea 再複製）。
+   fallbackEl 係畫面上現成嘅 textarea（複製文字時用，用家會見到揀中）；冇傳就用臨時 textarea */
+function copyText(text, fallbackEl) {
+  const done = function (ok) { toast(ok ? '已複製 ✓' : '複製唔到，請手動揀取文字'); };
+  const fallback = function () {
+    const prev = document.activeElement;
+    let el = fallbackEl;
+    let temp = null;
+    let ok = false;
+    try {
+      if (!el) {
+        temp = el = document.createElement('textarea');
+        el.value = text;
+        el.setAttribute('aria-hidden', 'true');
+        el.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+        document.body.appendChild(el);
+      }
+      el.focus();
+      el.select();
+      el.setSelectionRange(0, el.value.length);
+      ok = document.execCommand('copy');
+    } catch (e) { ok = false; }
+    if (temp) {
+      temp.remove();
+      if (prev && typeof prev.focus === 'function') prev.focus({ preventScroll: true });
+    }
+    done(ok);
+  };
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, fallback);
+      return;
+    }
+  } catch (e) { /* 轉後備 */ }
+  fallback();
+}
+
+/* 目前頁面網址（唔含 #）；分享連結用 */
+function shareBaseUrl() { return location.href.split('#')[0]; }
+
+/* 預覽內容：課文名、詞語數、每個詞語同提示句（全部係外來資料，一律 esc） */
+function sharePreviewHtml(l) {
+  const rows = l.words.map(function (w) {
+    const h = hasKey(l.hints, w) ? l.hints[w] : '';
+    return '<div class="sp-row"><span class="sp-word">' + esc(w) + '</span>' +
+      (h ? '<small class="sp-hint">' + esc(h) + '</small>' : '') + '</div>';
+  }).join('');
+  return '<p class="sp-title"><b>' + esc(l.title) + '</b>　<span>' + Number(l.words.length) + ' 個詞語</span></p>' +
+    '<div class="share-preview" tabindex="0" role="group" aria-label="課文內容預覽">' + rows + '</div>';
+}
+
+/* 未揀同學但有分享課文等緊加入：喺首頁出提示卡 */
+function shareWaitHtml() {
+  if (!ui.share || me()) return '';
+  return '<div class="notice reminder" role="region" aria-label="分享課文"><p>📩 有一課分享課文「' + esc(ui.share.title) +
+    '」等緊加入，' + (db.students.length ? '請先揀同學。' : '請先登記同學。') + '</p>' +
+    '<div class="notice-actions"><button class="link" data-action="cancelShare">放棄</button></div></div>';
+}
+
+function clearShareHash() {
+  if (!location.hash) return;
+  try { history.replaceState(null, '', location.pathname + location.search); } catch (e) { location.hash = ''; }
+}
+
+/* 丟棄等緊確認嘅分享課文並清走網址 hash */
+function discardShare() {
+  ui.share = null;
+  clearShareHash();
+}
+
+/* 分享課文出錯：單掣錯誤框（外來錯誤訊息一律經 confirmBox 嘅 esc） */
+function shareError(msg) {
+  confirmBox({ icon: '⚠️', title: '開唔到分享課文', text: String(msg), okText: '知道', single: true }, function () {});
+}
+
+/* 網址帶 #lesson=：解碼＋校驗；成功就放入 ui.share（等 pumpShare 彈預覽，永不自動加入；
+   hash 留到取消／加入先清走），失敗就彈錯誤框並即刻清走 hash */
+function checkShareHash() {
+  const h = location.hash || '';
+  if (h.indexOf('#lesson=') !== 0) return;
+  try {
+    ui.share = validateSharedLesson(decodeShare(h.slice(8)));
+  } catch (e) {
+    ui.share = null;
+    clearShareHash();
+    shareError(e.message);
+  }
+}
+
+/* 有等緊確認嘅分享課文而且已經揀咗同學：彈預覽。默書中、已有 dialog 時唔彈。取消／Esc／撳背景＝丟棄 */
+function pumpShare() {
+  if (!ui.share || ui.view === 'quiz' || document.querySelector('.modal-back')) return;
+  const s = me();
+  if (!s) return;
+  const lesson = ui.share;
+  confirmBox({
+    icon: '📥', title: '加入呢一課？',
+    text: '有人分享咗一課畀你。睇清楚內容，撳「加入」先會加入「' + s.name + '」嘅詞庫。',
+    okText: '加入', bodyHtml: sharePreviewHtml(lesson)
+  }, function () {
+    // PIN 先：通過先加入。取消 PIN 就同取消預覽一樣，丟棄 ui.share 並清走 hash
+    requirePin('加入課文', function () {
+      ui.share = null;
+      addSharedLesson(me() || s, lesson);
+    }, discardShare);
+  }, discardShare);
+}
+
+/* 加入分享課文：重複（同名同內容）、課文數量上限都會擋住 */
+function addSharedLesson(s, lesson) {
+  ui.share = null;
+  clearShareHash();
+  if (s.lessons.some(function (x) { return x.title === lesson.title && lessonText(x) === lessonText(lesson); })) {
+    toast('已經有呢一課');
+    go('lessons');
+    return;
+  }
+  if (s.lessons.length >= SHARE_LESSONS_MAX) {
+    toast('詞庫已經有 ' + SHARE_LESSONS_MAX + ' 課，唔可以再加');
+    return;
+  }
+  s.lessons.push({ id: uid(), title: lesson.title, words: lesson.words, hints: lesson.hints });
+  saveDB();
+  toast('已加入「' + lesson.title + '」✓');
+  go('lessons');
 }
 
 /* 編輯課文時嘅即時預覽：解析後嘅詞語 chips，有提示句就細字顯示（詞語同提示句係用家輸入，一律 esc） */
@@ -1182,6 +1635,7 @@ function settingsView(s) {
     '<div id="voicePicker">' + voicePickerHtml(s) + '</div>' +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
     '<div id="voiceNotice">' + voiceNoticeHtml(p.lang) + '</div></div>' +
+    parentCardHtml() +
     backupCardHtml() +
     // 字體署名（CC BY 4.0）：靜態文字，唔涉及資料
     '<p class="muted credit">答案字型：<a href="https://freehkfonts.opensource.hk/download/" target="_blank" rel="noopener">自由香港楷書</a> (Free HK Kai)，' +
@@ -1815,7 +2269,7 @@ function selectInGroup(el) {
 }
 
 Object.assign(actions, {
-  goHome: function () { db.currentId = null; saveDB(); go('home'); },
+  goHome: function () { lockPin(); db.currentId = null; saveDB(); go('home'); },   // 換人＝交畀其他人用，家長 PIN 即鎖
   goAdd: function () { ui.form = { name: '', grade: 1, avatar: AVATARS[0] }; go('add'); },
   setForm: function (el) {
     const key = el.dataset.key;
@@ -1852,7 +2306,10 @@ Object.assign(actions, {
     const d = new Date();
     try {
       db.lastBackupAt = d.toISOString();
-      const blob = new Blob([JSON.stringify(db, null, 2)], { type: 'application/json' });
+      // 備份檔唔包括家長 PIN（PIN 屬於呢部機嘅防誤觸設定，唔跟檔案流動）
+      const out = Object.assign({}, db);
+      delete out.parentPin;
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
       a.download = 'chi-vocab-backup-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.json';
@@ -1916,6 +2373,52 @@ Object.assign(actions, {
     toast('已儲存 ✓');
     actions.goLessons();
   }
+});
+
+/* ---------- 分享課文 ---------- */
+Object.assign(actions, {
+  shareLesson: function (el) {
+    const s = me();
+    const l = s && s.lessons.find(function (x) { return x.id === el.dataset.id; });
+    if (!l) return;
+    const text = shareLessonText(l);
+    const payload = encodeShare(text);
+    const linkOk = payload.length <= SHARE_PAYLOAD_MAX;
+    ui.shareOut = { text: text, link: linkOk ? shareBaseUrl() + '#lesson=' + payload : '' };
+    confirmBox({
+      icon: '📤', title: '分享「' + l.title + '」',
+      text: '複製文字或者連結，傳畀朋友。對方喺「我的詞庫」撳「匯入課文」貼上就得。',
+      okText: '完成', single: true,
+      bodyHtml: '<label class="field-label sr-only" for="shareText">分享文字</label>' +
+        '<textarea id="shareText" class="share-text" readonly>' + esc(text) + '</textarea>' +
+        '<div class="copy-row"><button class="btn blue small" data-action="copyShareText">複製文字</button>' +
+        '<button class="btn blue small" data-action="copyShareLink"' + (linkOk ? '' : ' disabled') + '>複製連結</button></div>' +
+        (linkOk ? '' : '<p class="field-error">課文太長，請用文字分享。</p>'),
+      focusSel: '[data-action=copyShareText]'
+    }, function () {});
+  },
+  copyShareText: function () {
+    if (ui.shareOut) copyText(ui.shareOut.text, document.getElementById('shareText'));
+  },
+  copyShareLink: function () {
+    if (ui.shareOut && ui.shareOut.link) copyText(ui.shareOut.link);
+  },
+  goLessonImport: function () { go('lessonImport'); },
+  /* 預覽：貼文字或者成條連結（抽出 #lesson= 後面部分）都得；校驗失敗彈錯誤框，成功彈預覽 */
+  previewImport: function () {
+    const box = document.getElementById('importText');
+    const v = box ? box.value.trim() : '';
+    try {
+      const at = v.indexOf('#lesson=');
+      ui.share = validateSharedLesson(at === -1 ? v : decodeShare(v.slice(at + 8).split(/\s/)[0]));
+    } catch (e) {
+      ui.share = null;
+      shareError(e.message);
+      return;
+    }
+    pumpShare();
+  },
+  cancelShare: function () { discardShare(); render(); }
 });
 
 /* ---------- 默書 ---------- */
@@ -2003,6 +2506,7 @@ Object.assign(actions, {
   },
 
   startQuiz: function () {
+    lockPin();   // 開始默書通常係交畀小朋友，家長 PIN 即鎖
     const s = me();
     const c = ui.setup;
     let words = [];
@@ -2188,6 +2692,110 @@ Object.assign(actions, {
   }
 });
 
+/* ---------- 家長 PIN dialog 同保護操作（T5.4） ----------
+   PIN 先、原本確認框後。解鎖 5 分鐘（滑動，每次成功操作順延），只存記憶體（ui.pinUntil）。
+   即時重新上鎖：goHome（換人）、startQuiz、頁面 hidden、取代還原成功。 */
+const PIN_DISCLAIMER = '呢個 PIN 只係防止小朋友誤撳，唔係真正加密或保安。4 位數字只有一萬種組合，懂技術嘅人可以輕易繞過（例如直接改瀏覽器資料）。';
+
+function pinFieldHtml(id, label) {
+  return '<label class="field-label" for="' + id + '">' + esc(label) + '</label>' +
+    '<input type="password" id="' + id + '" class="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off">';
+}
+
+/* 忘記 PIN 說明用 <details>，唔開第二個 dialog（兩個 confirmBox 同時開，Esc 會一齊關）。內容係靜態文字 */
+function forgotPinHtml() {
+  return '<details class="forgot-pin"><summary>忘記 PIN？</summary>' +
+    '<ol><li>喺首頁或者設定撳「備份資料」。</li>' +
+    '<li>撳「還原資料」，揀返嗰個備份檔。</li>' +
+    '<li>揀「取代全部」。資料照舊，PIN 會被移除，之後可以重新設定。</li></ol>' +
+    '<p class="muted">備份檔唔包括家長 PIN。</p></details>';
+}
+
+/* 冇 PIN 或者仍然解鎖：直接行 fn（有 PIN 就順延 5 分鐘）。否則彈 PIN dialog，通過先行 fn；取消／Esc 行 onCancel */
+function requirePin(reason, fn, onCancel) {
+  if (!db.parentPin) { fn(); return; }
+  if (pinUnlocked()) { unlockPin(); fn(); return; }
+  confirmBox({
+    icon: '🔒', title: '請輸入家長 PIN', text: '需要家長 PIN 先可以' + reason + '。',
+    okText: '確定', focusSel: '#pinInput',
+    bodyHtml: pinFieldHtml('pinInput', '家長 PIN（4 位數字）') + forgotPinHtml(),
+    validate: function (back) {
+      const inp = back.querySelector('#pinInput');
+      const v = inp.value;
+      if (!/^\d{4}$/.test(v)) return '請輸入 4 位數字';
+      if (checkPin(db.parentPin, v)) return true;
+      inp.value = '';
+      return 'PIN 唔啱，請再試';
+    }
+  }, function () { unlockPin(); fn(); }, onCancel);
+}
+
+/* 包住 action：撳落去嗰刻 snapshot el.dataset（PIN dialog 開關期間畫面可能重畫），通過 PIN 後用 snapshot 行原函數 */
+function guarded(reason, fn) {
+  return function (el) {
+    const snap = { dataset: Object.assign({}, el && el.dataset) };
+    requirePin(reason, function () { fn(snap); });
+  };
+}
+
+/* 設定／更改 PIN：兩個輸入框，各有 label；錯誤喺 dialog 內 role=alert 顯示，唔關框 */
+function setPinDialog(title) {
+  let chosen = '';   // validate 通過時記低；onOk 行嗰刻 dialog 已經關咗，讀唔到輸入框
+  confirmBox({
+    icon: '🔒', title: title, text: '請設定 4 位數字 PIN。' + PIN_DISCLAIMER,
+    okText: '儲存', focusSel: '#pinNew',
+    bodyHtml: pinFieldHtml('pinNew', '新 PIN（4 位數字）') + pinFieldHtml('pinNew2', '再輸入一次'),
+    validate: function (back) {
+      const a = back.querySelector('#pinNew').value;
+      const b = back.querySelector('#pinNew2').value;
+      if (!/^\d{4}$/.test(a)) return 'PIN 要係 4 位數字';
+      if (a !== b) return '兩次輸入唔一致';
+      chosen = a;
+      return true;
+    }
+  }, function () {
+    db.parentPin = makePin(chosen);
+    chosen = '';
+    unlockPin();   // 剛設定完，當家長已經解鎖
+    saveDB();
+    toast('已設定家長 PIN ✓');
+    render();
+  });
+}
+
+Object.assign(actions, {
+  setPin: function () { setPinDialog('設定家長 PIN'); },
+  changePin: function () {
+    if (!db.parentPin) return;
+    requirePin('更改 PIN', function () { setPinDialog('更改家長 PIN'); });
+  },
+  removePin: function () {
+    if (!db.parentPin) return;
+    requirePin('移除 PIN', function () {
+      confirmBox({
+        icon: '🔓', title: '移除家長 PIN？',
+        text: '移除後，刪除紀錄、修改詞庫等操作唔會再問 PIN。', okText: '移除', danger: true
+      }, function () {
+        db.parentPin = null;
+        lockPin();
+        saveDB();
+        toast('已移除家長 PIN');
+        render();
+      });
+    });
+  }
+});
+
+/* 受保護操作：只喺最外層包 PIN，原函數（確認框、removeRecords 等）一行唔改。
+   唔保護：分享／複製、備份匯出、還原、設定改名／年級／公仔／朗讀、開始默書 */
+[
+  ['deleteStudent', '刪除同學'],
+  ['newLesson', '修改詞庫'], ['editLesson', '修改詞庫'], ['deleteLesson', '修改詞庫'],
+  ['saveLesson', '儲存課文'],
+  ['removeBank', '刪除錯字'],
+  ['deleteRecord', '刪除紀錄'], ['deleteDay', '刪除紀錄']
+].forEach(function (p) { actions[p[0]] = guarded(p[1], actions[p[0]]); });
+
 /* =====================================================
    事件監聽同啟動
    ===================================================== */
@@ -2279,16 +2887,44 @@ document.addEventListener('change', function (e) {
       toast('還原失敗：' + err.message);   // 唔會寫入 localStorage
       return;
     }
+    const replaceAll = function () {
+      confirmBox({
+        icon: '📥', title: '還原資料？',
+        text: '會取代而家所有資料（共 ' + data.students.length + ' 位同學）。' +
+          (db.parentPin ? '備份檔唔包括家長 PIN，同時會移除家長 PIN。' : ''),
+        okText: '還原', danger: true
+      }, function () {
+        // 還原自一個備份檔，所以資料已經有檔案備份，備份時間當而家。
+        // 備份檔唔包括家長 PIN（data.parentPin 明確忽略）：取代還原後 PIN 一律移除，亦係「忘記 PIN」嘅出路
+        db = { students: data.students, currentId: null, lastBackupAt: new Date().toISOString(), parentPin: null };
+        lockPin();
+        saveDB();
+        render();
+        toast('還原成功 ✓');
+      });
+    };
+    if (!db.students.length) { replaceAll(); return; }   // 冇現有資料：照舊取代，行為不變
     confirmBox({
-      icon: '📥', title: '還原資料？',
-      text: '會取代而家所有資料（共 ' + data.students.length + ' 位同學）。',
-      okText: '還原', danger: true
+      icon: '📥', title: '點樣還原？',
+      text: '而家已經有資料，想點樣還原備份？',
+      bodyHtml: '<ul class="merge-help"><li>合併：保留現有資料，只加入備份入面冇嘅同學、課文、紀錄同錯字。</li>' +
+        '<li>取代全部：刪走現有資料，完全換成備份。</li>' +
+        '<li>之前打敗咗又喺備份入面嘅錯字，合併後會重新出現。</li></ul>',
+      okText: '合併（保留現有資料）', altText: '取代全部',
+      onAlt: replaceAll
     }, function () {
-      // 還原自一個備份檔，所以資料已經有檔案備份，備份時間當而家
-      db = { students: data.students, currentId: null, lastBackupAt: new Date().toISOString() };
-      saveDB();
-      render();
-      toast('還原成功 ✓');
+      try {
+        const merged = mergeDB(db, data);
+        const a = merged.added;
+        if (!a.students && !a.lessons && !a.records && !a.bank) { toast('冇新資料需要合併'); return; }
+        db.students = merged.students;   // 只改 students；currentId、lastBackupAt 唔掂
+        saveDB();
+        render();
+        toast('合併完成：新增 ' + a.students + ' 位同學、' + a.lessons + ' 課文、' + a.records + ' 次紀錄、' + a.bank + ' 個錯字' +
+          (a.conflicts ? '（' + a.conflicts + ' 課同名但內容唔同，已另存一份）' : ''), 6000);
+      } catch (err) {
+        toast('合併失敗，資料冇改動');
+      }
     });
   };
   reader.readAsText(file);
@@ -2298,7 +2934,19 @@ document.addEventListener('change', function (e) {
 // 只有一位同學而且上次冇撳「換人」（currentId 有效）：開 app 直接入主選單。
 // 撳「← 換人」會清 currentId，所以返到揀同學畫面之後唔會被彈返主選單
 if (db.students.length === 1 && me()) ui.view = 'menu';
+checkShareHash();   // 開 app 時網址已經帶 #lesson=（朋友傳咗連結）
 render();
+
+/* app 開住時網址 hash 轉成 #lesson=：默書中唔處理（避免打斷）；彈緊 dialog 時只記低，等 dialog 關咗再畫面更新 */
+window.addEventListener('hashchange', function () {
+  if (ui.view === 'quiz') return;
+  checkShareHash();
+  if (ui.share && !document.querySelector('.modal-back')) render();
+});
+/* 離開 app／切換分頁：家長 PIN 即時重新上鎖（手機交畀小朋友嘅常見情況） */
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'hidden') lockPin();
+});
 if (loadNotice) toast(loadNotice, 6000);   // 載入時有資料讀唔到，提示用家
 
 /* PWA：只喺 http(s)（file:// 唔支援 service worker）而且瀏覽器支援先註冊；失敗安靜略過，app 照常使用 */
