@@ -28,7 +28,7 @@ const SLOW_RATE = 0.45;    // 「慢啲再讀」嘅速度
 const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
 const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
 const HINT_MAX = 60;       // 提示句最多幾多個字（按字元計，超出截短）
-const PIN_UNLOCK_MS = 5 * 60 * 1000;   // 家長 PIN 解鎖後幾耐內唔使再輸入（滑動窗口，每次成功操作順延）
+const PIN_UNLOCK_MS = 3 * 60 * 1000;   // 家長 PIN 解鎖窗口：由輸入正確 PIN 嗰刻起計，固定長度、唔會因操作順延；只用嚟涵蓋一個課文編輯階段
 const TITLE_MAX = 20;      // 課文名最多幾多個字（同編輯頁 maxlength 一致）
 const WORD_MAX = 30;       // 分享課文：單個詞語最多幾多個字（超出拒收）
 const SHARE_WORDS_MAX = 100;     // 分享課文：最多幾多個詞語（超出拒收）
@@ -695,6 +695,7 @@ function stopSpeech() {
 
 function go(view) {
   if (ui.view === 'quiz' && view !== 'quiz') { clearTimers(); stopSpeech(); }
+  if (ui.view === 'lessonEdit' && view !== 'lessonEdit') lockPin();   // 離開課文編輯頁（儲存、返回、換人…）即鎖，PIN 只管一個編輯階段
   ui.view = view;
   render();
   window.scrollTo(0, 0);
@@ -1235,7 +1236,7 @@ function backupReminderHtml() {
 function parentCardHtml() {
   const on = !!db.parentPin;
   return '<div class="card" style="margin-top:16px"><h2>家長模式</h2>' +
-    '<p class="muted">設定 PIN 後，刪除紀錄、刪除錯字、修改詞庫、刪除同學同加入分享課文，都要先輸入 4 位數字 PIN。輸入後 5 分鐘內唔使再輸入；換人、開始默書或者離開 app 就會即刻重新上鎖。</p>' +
+    '<p class="muted">設定 PIN 後，刪除紀錄、刪除錯字、修改或刪除詞庫（詞語、課文）、刪除同學同加入分享課文，每次都要先輸入 4 位數字 PIN，剛設定或更改 PIN 之後都一樣。改課文只需輸入一次，3 分鐘內可以儲存，離開編輯頁就重新上鎖；換人、開始默書或者離開 app 都會即刻上鎖。</p>' +
     '<p class="muted pin-note" style="margin-top:6px">' + esc(PIN_DISCLAIMER) + '</p>' +
     (on
       ? '<p class="pin-state"><b>✅ 已啟用</b></p>' +
@@ -2693,8 +2694,13 @@ Object.assign(actions, {
 });
 
 /* ---------- 家長 PIN dialog 同保護操作（T5.4） ----------
-   PIN 先、原本確認框後。解鎖 5 分鐘（滑動，每次成功操作順延），只存記憶體（ui.pinUntil）。
-   即時重新上鎖：goHome（換人）、startQuiz、頁面 hidden、取代還原成功。 */
+   PIN 先、原本確認框後。解鎖政策（修正「剛設定 PIN 後改／刪詞語冇問 PIN」之後）：
+   - 每個受保護操作都要 PIN；做完（確認框彈出／加入／刪除）即鎖，下一個操作再問。
+   - 唯一例外係課文編輯階段：newLesson／editLesson 過 PIN 後保持解鎖，等同一次編輯可以儲存；
+     窗口固定 PIN_UNLOCK_MS（3 分鐘，唔順延），儲存時 saveLesson 再檢查，過期就重問（草稿保留）。
+     離開編輯頁（儲存、返回、換人）經 go() 即鎖。
+   - 設定／更改／移除 PIN 完成後唔解鎖。
+   - 其他即鎖：goHome（換人）、startQuiz、頁面 hidden、取代還原成功。只存記憶體（ui.pinUntil）。 */
 const PIN_DISCLAIMER = '呢個 PIN 只係防止小朋友誤撳，唔係真正加密或保安。4 位數字只有一萬種組合，懂技術嘅人可以輕易繞過（例如直接改瀏覽器資料）。';
 
 function pinFieldHtml(id, label) {
@@ -2711,10 +2717,13 @@ function forgotPinHtml() {
     '<p class="muted">備份檔唔包括家長 PIN。</p></details>';
 }
 
-/* 冇 PIN 或者仍然解鎖：直接行 fn（有 PIN 就順延 5 分鐘）。否則彈 PIN dialog，通過先行 fn；取消／Esc 行 onCancel */
-function requirePin(reason, fn, onCancel) {
+/* 冇 PIN：直接行 fn。有 PIN 而仲喺解鎖窗口內（只會係課文編輯階段）：直接行 fn，唔順延窗口。
+   否則彈 PIN dialog，通過先行 fn；取消／Esc 行 onCancel。
+   fn 行完即鎖，除非 keep（課文編輯階段：newLesson／editLesson／saveLesson，由 go() 離開編輯頁時上鎖） */
+function requirePin(reason, fn, onCancel, keep) {
   if (!db.parentPin) { fn(); return; }
-  if (pinUnlocked()) { unlockPin(); fn(); return; }
+  const run = function () { fn(); if (!keep) lockPin(); };
+  if (pinUnlocked()) { run(); return; }
   confirmBox({
     icon: '🔒', title: '請輸入家長 PIN', text: '需要家長 PIN 先可以' + reason + '。',
     okText: '確定', focusSel: '#pinInput',
@@ -2727,14 +2736,14 @@ function requirePin(reason, fn, onCancel) {
       inp.value = '';
       return 'PIN 唔啱，請再試';
     }
-  }, function () { unlockPin(); fn(); }, onCancel);
+  }, function () { unlockPin(); run(); }, onCancel);
 }
 
 /* 包住 action：撳落去嗰刻 snapshot el.dataset（PIN dialog 開關期間畫面可能重畫），通過 PIN 後用 snapshot 行原函數 */
-function guarded(reason, fn) {
+function guarded(reason, fn, keep) {
   return function (el) {
     const snap = { dataset: Object.assign({}, el && el.dataset) };
-    requirePin(reason, function () { fn(snap); });
+    requirePin(reason, function () { fn(snap); }, null, keep);
   };
 }
 
@@ -2756,7 +2765,7 @@ function setPinDialog(title) {
   }, function () {
     db.parentPin = makePin(chosen);
     chosen = '';
-    unlockPin();   // 剛設定完，當家長已經解鎖
+    lockPin();   // 設定／更改完唔解鎖：之後第一個刪除或修改照樣要輸入 PIN
     saveDB();
     toast('已設定家長 PIN ✓');
     render();
@@ -2764,7 +2773,10 @@ function setPinDialog(title) {
 }
 
 Object.assign(actions, {
-  setPin: function () { setPinDialog('設定家長 PIN'); },
+  setPin: function () {
+    if (db.parentPin) { actions.changePin(); return; }   // 已有 PIN 就一定要先驗證現有 PIN，唔可以靠 setPin 覆蓋
+    setPinDialog('設定家長 PIN');
+  },
   changePin: function () {
     if (!db.parentPin) return;
     requirePin('更改 PIN', function () { setPinDialog('更改家長 PIN'); });
@@ -2790,11 +2802,11 @@ Object.assign(actions, {
    唔保護：分享／複製、備份匯出、還原、設定改名／年級／公仔／朗讀、開始默書 */
 [
   ['deleteStudent', '刪除同學'],
-  ['newLesson', '修改詞庫'], ['editLesson', '修改詞庫'], ['deleteLesson', '修改詞庫'],
-  ['saveLesson', '儲存課文'],
+  ['newLesson', '修改詞庫', true], ['editLesson', '修改詞庫', true], ['deleteLesson', '修改詞庫'],
+  ['saveLesson', '儲存課文', true],   // 第三項 true = 課文編輯階段：過咗 PIN 保持解鎖，離開編輯頁（go()）先鎖
   ['removeBank', '刪除錯字'],
   ['deleteRecord', '刪除紀錄'], ['deleteDay', '刪除紀錄']
-].forEach(function (p) { actions[p[0]] = guarded(p[1], actions[p[0]]); });
+].forEach(function (p) { actions[p[0]] = guarded(p[1], actions[p[0]], p[2]); });
 
 /* =====================================================
    事件監聽同啟動
