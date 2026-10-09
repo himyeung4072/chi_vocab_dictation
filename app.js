@@ -24,9 +24,11 @@ const COMFORTS = ['唔緊要，下次記得！', '錯咗先會記得牢啲！', 
 const FIRST_DELAY = 1500;  // 開始默書後，第一個詞語朗讀前嘅等待
 const NEXT_DELAY = 1000;   // 下一題出現後，朗讀前嘅等待
 const FEEDBACK_MS = 1200;  // 答啱／錯動畫顯示時間，播完先轉下一題
-const SLOW_RATE = 0.45;    // 「慢啲再讀」嘅速度
+const SLOW_RATE = 0.45;    // 「再讀慢啲」嘅速度
 const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
 const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
+// 設定頁「🔊 試聽」讀嘅句子；普通話用書面語，唔用廣東話口語
+const VOICE_TEST = { yue: '你好，我哋開始默書啦', cmn: '你好，我們開始默書了' };
 const HINT_MAX = 60;       // 提示句最多幾多個字（按字元計，超出截短）
 const PIN_UNLOCK_MS = 3 * 60 * 1000;   // 家長 PIN 解鎖窗口：由輸入正確 PIN 嗰刻起計，固定長度、唔會因操作順延；只用嚟涵蓋一個課文編輯階段
 const TITLE_MAX = 20;      // 課文名最多幾多個字（同編輯頁 maxlength 一致）
@@ -35,7 +37,6 @@ const SHARE_WORDS_MAX = 100;     // 分享課文：最多幾多個詞語（超�
 const SHARE_TEXT_MAX = 5000;     // 分享課文：文字最多幾多個字（超出拒收）
 const SHARE_PAYLOAD_MAX = 20000; // 分享連結 #lesson= 後面最多幾多字元（中文 UTF-8 每字 3 byte，base64 約 4 字元）
 const SHARE_LESSONS_MAX = 100;   // 一位同學最多幾多課（只喺加入分享課文時檢查）
-const HINT_GAP_MS = 500;   // 詞語讀完之後，等幾耐先讀提示句
 const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
 const BANK_COUNT_DEFAULT = 10;     // 錯字怪獸模式預設默幾多個錯字
 const HISTORY_MAX = 200;   // 每位同學最多保留幾多次默書紀錄
@@ -145,6 +146,7 @@ let ui = {
   statTab: 'word',
   recordId: null,
   recordBack: 'history',
+  voiceLang: null,       // 設定頁而家編輯緊邊個語言嘅聲音（只存記憶體，null = 跟預設朗讀語言）
   backupSnoozed: false,  // 撳咗「之後再講」：今次開 app 唔再提醒備份
   pinUntil: 0            // 家長 PIN 解鎖到幾時（毫秒時間戳）；只存記憶體，重新整理即鎖
 };
@@ -352,7 +354,7 @@ function cleanHints(obj, words) {
 
 /* app 儲存課文時最少要有一個詞（saveLesson 會檢查），清理後冇詞語嘅只可能係損壞資料，直接剔走。
    l.hints（提示句對照表）：舊資料冇就係空表。
-   遷移：T2.6 之後、T5.1 之前儲存嘅課文，詞語可能包含「｜」／「|」（例如「公園｜我哋去公園玩」當咗一個詞），
+   遷移：T2.6 之後、T5.1 之前儲存嘅課文，詞語可能包含「｜」／「|」（例如「公園 | 我們去公園玩耍」當咗一個詞），
    喺第一個分隔符拆成詞語同提示句；課文原有嘅 hints 優先 */
 function cleanLessons(list) {
   if (!Array.isArray(list)) return [];
@@ -461,10 +463,13 @@ function cleanTimestamp(x) {
   return new Date(t).toISOString();
 }
 
-/* 聲音 id（prefs.voiceURI）：只接受非空字串，最多 200 字元，否則當作「自動」（空字串） */
+/* 聲音 id（prefs.voiceYue／voiceCmn／舊版 voiceURI）：只接受非空字串，最多 200 字元，否則當作「自動」（空字串） */
 function cleanVoiceURI(x) {
   return typeof x === 'string' && x.length > 0 && x.length <= 200 ? x : '';
 }
+
+/* 朗讀語言對應嘅聲音欄位：廣東話 voiceYue、普通話 voiceCmn（LANGS 只有兩個語言） */
+function voicePrefKey(langKey) { return langKey === 'yue' ? 'voiceYue' : 'voiceCmn'; }
 
 /* ---------- 家長 PIN（T5.4） ----------
    只係防止小朋友誤撳，唔係真正保安：4 位數字只有一萬種組合。
@@ -562,7 +567,9 @@ function normaliseStudent(st) {
     speed: speed,
     hintSpeed: hasKey(SPEEDS, pf.hintSpeed) ? pf.hintSpeed : speed,   // 提示句速度；舊資料／舊備份冇此欄位就跟朗讀速度
     lastLessonIds: cleanIds(pf.lastLessonIds),   // 上次默書揀嘅課文
-    voiceURI: cleanVoiceURI(pf.voiceURI),        // 揀咗嘅朗讀聲音；空 = 自動
+    voiceYue: cleanVoiceURI(pf.voiceYue),        // 廣東話揀咗嘅朗讀聲音；空 = 自動
+    voiceCmn: cleanVoiceURI(pf.voiceCmn),        // 普通話揀咗嘅朗讀聲音；空 = 自動
+    voiceURI: cleanVoiceURI(pf.voiceURI),        // 舊版單一聲音；待 migrateLegacyVoice 按聲音語言遷到 voiceYue／voiceCmn，遷完清空
     shortcuts: pf.shortcuts !== false            // 默書鍵盤快捷鍵；只有明確 false 先關，舊資料／舊備份冇此欄位當開
   };
   st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
@@ -676,17 +683,15 @@ function newStudent(name, grade, avatar) {
 }
 
 /* ---------- 畫面切換 ---------- */
-const timers = { speak: null, adv: null, lock: null, hint: null };
+const timers = { speak: null, adv: null, lock: null };
 
 function clearTimers() {
   clearTimeout(timers.speak);
   clearTimeout(timers.adv);
   clearTimeout(timers.lock);
-  clearTimeout(timers.hint);
   timers.speak = null;
   timers.adv = null;
   timers.lock = null;
-  timers.hint = null;
 }
 
 function stopSpeech() {
@@ -696,6 +701,7 @@ function stopSpeech() {
 function go(view) {
   if (ui.view === 'quiz' && view !== 'quiz') { clearTimers(); stopSpeech(); }
   if (ui.view === 'lessonEdit' && view !== 'lessonEdit') lockPin();   // 離開課文編輯頁（儲存、返回、換人…）即鎖，PIN 只管一個編輯階段
+  if (view === 'settings' && ui.view !== 'settings') ui.voiceLang = null;   // 進入設定頁：聲音編輯語言重設為跟預設朗讀語言
   ui.view = view;
   render();
   window.scrollTo(0, 0);
@@ -713,6 +719,7 @@ if ('speechSynthesis' in window) {
   refreshVoices();
   window.speechSynthesis.addEventListener('voiceschanged', function () {
     refreshVoices();
+    migrateLegacyVoice(me());
     if (ui.view === 'settings') updateVoiceNotice();
   });
 }
@@ -736,11 +743,27 @@ function voicesFor(langKey) {
 
 function voiceId(v) { return v.voiceURI || v.name || ''; }
 
-/* 先用同學揀咗嘅聲音（prefs.voiceURI，而且要符合今次嘅朗讀語言）；搵唔到就用自動揀嘅 */
+/* 舊版單一聲音（prefs.voiceURI）遷到 voiceYue／voiceCmn：按嗰把聲音屬邊個語言決定。
+   聲音清單未載入、或者呢部機搵唔到嗰把聲音：保留舊值唔掂，等之後有聲音再遷，唔丟資料。
+   新欄位已有值就以新值為準 */
+function migrateLegacyVoice(s) {
+  const pf = s && s.prefs;
+  if (!pf || !pf.voiceURI || !voices.length) return;
+  const inList = function (k) { return voicesFor(k).some(function (v) { return voiceId(v) === pf.voiceURI; }); };
+  const k = inList('yue') ? 'yue' : inList('cmn') ? 'cmn' : '';
+  if (!k) return;
+  const f = voicePrefKey(k);
+  if (!pf[f]) pf[f] = pf.voiceURI;
+  pf.voiceURI = '';
+  saveDB();
+}
+
+/* 先用同學為呢個語言揀咗嘅聲音（廣東話 prefs.voiceYue／普通話 prefs.voiceCmn，只喺該語言適用聲音內搵）；搵唔到就用自動揀嘅 */
 function pickVoice(langKey) {
   const list = voicesFor(langKey);
   const s = me();
-  const uri = s && s.prefs ? s.prefs.voiceURI : '';
+  migrateLegacyVoice(s);
+  const uri = s && s.prefs ? s.prefs[voicePrefKey(langKey)] : '';
   if (uri) {
     const chosen = list.find(function (v) { return voiceId(v) === uri; });
     if (chosen) return chosen;
@@ -822,29 +845,54 @@ function voiceNoticeHtml(langKey) {
   return '<div class="notice">⚠️ ' + esc(w) + help + '</div>';
 }
 
-/* 聲音選單：自動 + 符合目前朗讀語言嘅聲音；冇聲音可揀就唔畫選單 */
+/* 設定頁而家編輯緊邊個語言嘅聲音：用家喺下拉選單揀過就跟佢，否則跟預設朗讀語言 */
+function voiceLangKey(s) { return hasKey(LANGS, ui.voiceLang) ? ui.voiceLang : s.prefs.lang; }
+
+/* 聲音設定：先揀語言（廣東話／普通話），再揀嗰個語言嘅聲音（自動 + 符合該語言嘅聲音）。
+   該語言冇聲音可揀就唔畫聲音選單，但語言下拉照樣可用 */
 function voicePickerHtml(s) {
   if (!('speechSynthesis' in window)) return '';
   refreshVoices();
-  const list = voicesFor(s.prefs.lang);
-  if (!list.length) return '';
-  const cur = s.prefs.voiceURI;
+  migrateLegacyVoice(s);
+  const lk = voiceLangKey(s);
+  const langOpts = Object.keys(LANGS).map(function (k) {
+    return '<option value="' + esc(k) + '"' + (k === lk ? ' selected' : '') + '>' + esc(LANGS[k].label) + '</option>';
+  });
+  const head = '<label class="field-label" for="voiceLang">朗讀聲音語言</label>' +
+    '<select id="voiceLang" class="voice-select">' + langOpts.join('') + '</select>';
+  const list = voicesFor(lk);
+  if (!list.length) return head + '<p class="muted" style="margin-top:8px">呢個語言暫時冇可揀嘅聲音。</p>';
+  const cur = s.prefs[voicePrefKey(lk)];
   const opts = ['<option value=""' + (cur ? '' : ' selected') + '>自動（建議）</option>'].concat(list.map(function (v) {
     const id = voiceId(v);
     return '<option value="' + esc(id) + '"' + (id === cur ? ' selected' : '') + '>' + esc(v.name + '（' + v.lang + '）') + '</option>';
   }));
-  return '<label class="field-label" for="voiceSelect">朗讀聲音</label>' +
+  return head + '<label class="field-label" for="voiceSelect">朗讀聲音（' + esc(LANGS[lk].label) + '）</label>' +
     '<select id="voiceSelect" class="voice-select">' + opts.join('') + '</select>';
+}
+
+/* 強制重畫聲音設定（語言下拉改變時用）；焦點還給語言下拉 */
+function renderVoicePicker() {
+  const s = me();
+  if (!s) return;
+  const pick = document.getElementById('voicePicker');
+  if (pick) pick.innerHTML = voicePickerHtml(s);
+  const box = document.getElementById('voiceNotice');
+  if (box) box.innerHTML = voiceNoticeHtml(voiceLangKey(s));
+  const sel = document.getElementById('voiceLang');
+  if (sel) sel.focus();
 }
 
 function updateVoiceNotice() {
   const s = me();
   if (!s) return;
   const box = document.getElementById('voiceNotice');
-  if (box) box.innerHTML = voiceNoticeHtml(s.prefs.lang);
+  if (box) box.innerHTML = voiceNoticeHtml(voiceLangKey(s));
   // 聲音清單隨語言改變、或者系統稍後先載入聲音（voiceschanged）而更新；用家正喺度揀嗰陣唔好打斷
   const pick = document.getElementById('voicePicker');
-  if (pick && document.activeElement !== document.getElementById('voiceSelect')) pick.innerHTML = voicePickerHtml(s);
+  const active = document.activeElement;
+  const busy = active === document.getElementById('voiceSelect') || active === document.getElementById('voiceLang');
+  if (pick && !busy) pick.innerHTML = voicePickerHtml(s);
 }
 
 /* ---------- 特效 ---------- */
@@ -1365,7 +1413,7 @@ function lessonImportView() {
     '<div class="card"><h2>匯入課文</h2>' +
     '<label class="field-label" for="importText">貼上朋友分享嘅課文文字或者連結</label>' +
     '<p class="muted hint-help" id="importHelp">貼上之後撳「預覽」，睇清楚內容先決定加唔加入詞庫，唔會自動加入。</p>' +
-    '<textarea id="importText" aria-describedby="importHelp" placeholder="【課文】第一課&#10;蘋果&#10;公園｜我哋去公園玩"></textarea>' +
+    '<textarea id="importText" aria-describedby="importHelp" placeholder="【課文】第一課&#10;蘋果&#10;公園 | 我們去公園玩耍"></textarea>' +
     '<button class="btn green block" style="margin-top:18px" data-action="previewImport">預覽</button></div>';
 }
 
@@ -1538,8 +1586,8 @@ function lessonEditView(s) {
     '<label class="field-label" for="lessonTitle">課文名稱</label>' +
     '<input type="text" id="lessonTitle" maxlength="20" autocomplete="off" value="' + esc(title) + '">' +
     '<label class="field-label" for="lessonWords">詞語（一行一個，或者用逗號、空格、斜線分開）</label>' +
-    '<p class="muted hint-help" id="hintHelp">想加提示句：一行寫一個詞語，後面加「｜」（或者 |）再寫句子，例如「公園｜我哋去公園玩」。朗讀時會先讀詞語，再讀提示句；提示句最多 ' + HINT_MAX + ' 個字。</p>' +
-    '<textarea id="lessonWords" aria-describedby="hintHelp" placeholder="例如：&#10;蘋果&#10;公園｜我哋去公園玩&#10;西瓜">' + esc(words) + '</textarea>' +
+    '<p class="muted hint-help" id="hintHelp">想加提示句：一行寫一個詞語，後面加「｜」（或者 |）再寫句子，例如「公園 | 我們去公園玩耍」。默書時有提示句嘅詞語會出現「💡 提示句」掣，學生需要先自己撳來聽；提示句最多 ' + HINT_MAX + ' 個字。</p>' +
+    '<textarea id="lessonWords" aria-describedby="hintHelp" placeholder="例如：&#10;蘋果&#10;公園 | 我們去公園玩耍&#10;西瓜">' + esc(words) + '</textarea>' +
     '<p class="muted" style="margin-top:8px">共 <b id="wordCount">' + parsed.words.length + '</b> 個詞語<span id="hintCount">' + esc(hintCountText(parsed)) + '</span>（儲存時會自動去走頭尾標點同重複詞語）</p>' +
     '<div class="word-preview" id="wordPreview" role="group" aria-label="詞語預覽">' + wordPreviewHtml(parsed) + '</div>' +
     '<button class="btn green block" style="margin-top:18px" data-action="saveLesson">儲存 ✓</button></div>';
@@ -1628,14 +1676,14 @@ function settingsView(s) {
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
     '<span class="field-label">提示句速度</span>' +
     group('hintSpeed', Object.keys(SPEEDS).map(function (k) { return chip('hintSpeed', k, SPEEDS[k].label); }).join('')) +
-    '<p class="muted" style="margin-top:6px">詞語有提示句（例如「公園｜我哋去公園玩」）先會讀，喺詞語之後讀出。</p>' +
+    '<p class="muted" style="margin-top:6px">學生喺默書畫面撳「💡 提示句」掣先會讀（有提示句嘅詞語先有此掣，例如「公園 | 我們去公園玩耍」），唔會自動讀。呢度設定提示句嘅朗讀速度。</p>' +
     '<span class="field-label" id="shortcutsLabel">鍵盤快捷鍵</span>' +
     '<div class="toggle-select" data-group="shortcuts" role="group" aria-labelledby="shortcutsLabel">' +
     shortcutChip(true, '開') + shortcutChip(false, '關') + '</div>' +
     '<p class="muted" style="margin-top:6px">默書時用空白、Enter、1、2 操作。語音輸入或讀屏軟件用家可以關閉，避免誤觸。</p>' +
     '<div id="voicePicker">' + voicePickerHtml(s) + '</div>' +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
-    '<div id="voiceNotice">' + voiceNoticeHtml(p.lang) + '</div></div>' +
+    '<div id="voiceNotice">' + voiceNoticeHtml(voiceLangKey(s)) + '</div></div>' +
     parentCardHtml() +
     backupCardHtml() +
     // 字體署名（CC BY 4.0）：靜態文字，唔涉及資料
@@ -1772,11 +1820,13 @@ function revealLabel(locked) {
 }
 
 function listenHtml(q) {
+  const hasHint = !!(q.hints && q.hints[q.words[q.idx]]);   // 有提示句先出「💡 提示句」掣
   return '<p class="prompt" data-focus>聽下，寫喺紙上面 ✏️</p>' +
     '<button class="speaker" id="speakerBtn" data-action="speak" aria-label="再聽一次">🔊</button>' +
     '<div class="status" id="status">' + (q.waiting ? WAIT_HTML : '') + '</div>' +
     langSwitch(q) +
-    '<div><button class="btn ghost small" data-action="slow">🐢 慢啲再讀</button></div>' +
+    '<div class="read-row"><button class="btn ghost small" data-action="slow">🐢 再讀慢啲</button>' +
+    (hasHint ? '<button class="btn ghost small" id="hintBtn" data-action="hint"' + (q.locked ? ' disabled' : '') + '>💡 提示句</button>' : '') + '</div>' +
     '<button class="btn green block" id="revealBtn" style="margin-top:22px;min-height:64px;font-size:1.25rem" data-action="reveal"' +
     (q.locked ? ' disabled' : '') + '>' + revealLabel(q.locked) + '</button>' +
     // 預留位置（min-height），鎖定提示出現／消失時版面唔會跳；內容由 syncLockHint 填
@@ -2096,20 +2146,16 @@ function setWaiting(on) {
 }
 
 /* 朗讀而家呢題，語言用學生為呢個詞語揀咗嘅語言。
-   有提示句：詞語讀完等 HINT_GAP_MS 再讀提示句（同一語言、同一把聲，語速用 hintSpeed）。
-   rate（「慢啲再讀」）有傳就詞語同提示句都用佢。「睇答案」喺詞語讀完就解鎖，唔使等提示句 */
+   只讀詞語；提示句由學生按「💡 提示句」先讀（actions.hint）。
+   rate（「再讀慢啲」）有傳就用佢。「睇答案」喺詞語讀完就解鎖 */
 function speakCurrent(rate) {
   const q = ui.quiz;
   const idx = q.idx;
   q.speakSeq = (q.speakSeq || 0) + 1;
   const seq = q.speakSeq;
-  // 只處理「同一題、同一次朗讀」嘅事件：上一題遲來嘅完結訊號唔可以解鎖下一題，重聽後唔會讀到舊一次嘅提示句
+  // 只處理「同一題、同一次朗讀」嘅事件：上一題遲來嘅完結訊號唔可以解鎖下一題
   const same = function () { return ui.quiz === q && q.idx === idx && q.speakSeq === seq; };
-  clearTimeout(timers.hint);
-  timers.hint = null;
   const word = q.words[q.idx];
-  const hint = q.hints ? q.hints[word] || '' : '';
-  const hintRate = rate || SPEEDS[q.hintSpeed || q.speed].rate;
   setWaiting(false);   // 一開始朗讀，「預備緊」提示一定要走
   speak(word, q.curLang, rate || SPEEDS[q.speed].rate, {
     onstart: function () {
@@ -2120,15 +2166,8 @@ function speakCurrent(rate) {
     onend: function () {
       if (!same()) return;
       setWaiting(false);
+      setSpeaking(false);
       unlockReveal();   // 詞語讀完先可以睇答案
-      if (!hint) { setSpeaking(false); return; }
-      timers.hint = setTimeout(function () {
-        timers.hint = null;
-        if (!same() || !canHear()) { setSpeaking(false); return; }
-        speak(hint, q.curLang, hintRate, {
-          onend: function () { if (same()) setSpeaking(false); }
-        });
-      }, HINT_GAP_MS);
     }
   });
   if (q.locked) {
@@ -2145,6 +2184,8 @@ function unlockReveal() {
   q.locked = false;
   clearTimeout(timers.lock);
   timers.lock = null;
+  const hb = document.getElementById('hintBtn');   // 提示句掣同「睇答案」一齊解鎖
+  if (hb) hb.disabled = false;
   const b = document.getElementById('revealBtn');
   if (!b) return;
   b.disabled = false;
@@ -2184,8 +2225,6 @@ function prepareQuestion(enter) {
   q.locked = true;      // 第一次朗讀播完之前，唔可以睇答案
   clearTimeout(timers.lock);
   timers.lock = null;
-  clearTimeout(timers.hint);   // 上一題未讀嘅提示句唔好帶入呢題
-  timers.hint = null;
 }
 
 function beginQuestion() {
@@ -2473,7 +2512,10 @@ Object.assign(actions, {
     s.prefs[el.dataset.key] = el.dataset.val;
     saveDB();
     selectInGroup(el);
-    if (el.dataset.key === 'lang') updateVoiceNotice();
+    if (el.dataset.key === 'lang') {
+      if (hasKey(LANGS, el.dataset.val)) ui.voiceLang = el.dataset.val;   // 預設朗讀語言一改，聲音編輯語言跟住轉
+      updateVoiceNotice();
+    }
   },
   setShortcuts: function (el) {
     const s = me();
@@ -2502,8 +2544,9 @@ Object.assign(actions, {
   },
   testVoice: function () {
     unlockSpeech();
-    const p = me().prefs;
-    speak('你好，我哋開始默書啦', p.lang, SPEEDS[p.speed].rate);
+    const s = me();
+    const lk = voiceLangKey(s);   // 跟設定頁下拉選單揀咗嘅語言；普通話讀書面語試聽句
+    speak(VOICE_TEST[lk], lk, SPEEDS[s.prefs.speed].rate);
   },
 
   startQuiz: function () {
@@ -2587,6 +2630,21 @@ Object.assign(actions, {
     if (!canHear()) return;
     cancelScheduled();
     speakCurrent(SLOW_RATE);
+  },
+  // 提示句由學生按「💡 提示句」先讀：同一語言、同一把聲，速度用 hintSpeed
+  hint: function () {
+    const q = ui.quiz;
+    if (!canHear() || q.phase !== 'listen' || q.locked) return;
+    const hint = q.hints ? q.hints[q.words[q.idx]] || '' : '';
+    if (!hint) return;
+    cancelScheduled();
+    q.speakSeq = (q.speakSeq || 0) + 1;   // 令仍在途嘅詞語完結訊號失效
+    const idx = q.idx, seq = q.speakSeq;
+    const same = function () { return ui.quiz === q && q.idx === idx && q.speakSeq === seq; };
+    speak(hint, q.curLang, SPEEDS[q.hintSpeed || q.speed].rate, {   // speak() 開頭已 synth.cancel()，唔會同現有朗讀重疊
+      onstart: function () { if (same()) setSpeaking(true); },
+      onend: function () { if (same()) setSpeaking(false); }
+    });
   },
   setWordLang: function (el) {
     if (!canHear()) return;
@@ -2821,7 +2879,7 @@ document.addEventListener('click', function (e) {
   if (fn) fn(el);
   // 滑鼠／觸控（detail > 0）撳完朗讀類掣就放走焦點，等 Enter／空白繼續行默書快捷鍵；
   // 鍵盤啟動嘅 click（detail === 0）唔處理，保持鍵盤同讀屏用家嘅焦點位置
-  if (e.detail > 0 && (el.dataset.action === 'speak' || el.dataset.action === 'slow' || el.dataset.action === 'setWordLang')) el.blur();
+  if (e.detail > 0 && (el.dataset.action === 'speak' || el.dataset.action === 'slow' || el.dataset.action === 'hint' || el.dataset.action === 'setWordLang')) el.blur();
 });
 
 document.addEventListener('input', function (e) {
@@ -2880,9 +2938,16 @@ document.addEventListener('change', function (e) {
   if (e.target.id === 'voiceSelect') {
     const s = me();
     if (!s) return;
-    s.prefs.voiceURI = cleanVoiceURI(e.target.value);
+    s.prefs[voicePrefKey(voiceLangKey(s))] = cleanVoiceURI(e.target.value);   // 按下拉選單揀咗嘅語言分別儲存
     saveDB();
     actions.testVoice();   // 揀完即時試聽
+    return;
+  }
+  if (e.target.id === 'voiceLang') {
+    // 只切換設定頁顯示邊個語言嘅聲音，唔寫 prefs、唔試聽
+    if (!hasKey(LANGS, e.target.value)) return;
+    ui.voiceLang = e.target.value;
+    renderVoicePicker();
     return;
   }
   if (e.target.id !== 'importFile') return;
