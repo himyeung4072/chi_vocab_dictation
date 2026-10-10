@@ -955,6 +955,140 @@ input[aria-invalid=true] { border-color: var(--red); }
   .lesson-row .info + .btn { margin-left: auto; }
 }
 
+/* ---------- 新默書方式：設定頁（默書方式卡、定時秒數） ---------- */
+.mode-list { display: flex; flex-direction: column; gap: 10px; }
+.mode-opt {
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px 16px;
+  text-align: left;
+  color: var(--text);
+  background: #fff;
+  border: 2px solid var(--line);
+  border-radius: 18px;
+  touch-action: manipulation;
+}
+.mode-opt b { display: block; font-size: 1.05rem; }
+.mode-opt small { display: block; margin-top: 2px; font-size: .85rem; color: var(--muted); }
+.mode-opt.on { background: var(--orange); border-color: var(--orange-d); color: #fff; box-shadow: 0 3px 0 var(--orange-d); }
+.mode-opt.on b::before { content: '✓ '; }
+.mode-opt.on small { color: #fff; }   /* 白字 on #C44E0A，同 .chip.on */
+.mode-opt[disabled] { border-style: dashed; background: #F2F2F2; cursor: not-allowed; pointer-events: none; color: var(--text); }
+.mode-opt[disabled] small { color: var(--text); }
+.timed-set { margin-top: 14px; padding-top: 6px; border-top: 2px dashed var(--line); }
+.tier-row { display: flex; align-items: center; gap: 10px; min-height: 48px; }
+.tier-label { flex: 1; font-weight: 700; }
+.tier-val { min-width: 4.2em; text-align: center; }
+.tier-row output { display: inline-block; min-width: 1.6em; font-weight: 800; font-size: 1.15rem; text-align: center; }
+.step {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid var(--orange-d);
+  background: #fff;
+  color: var(--orange-d);
+  font-size: 1.3rem;
+  font-weight: 800;
+  line-height: 1;
+  touch-action: manipulation;
+}
+.step:active { transform: scale(.92); }
+.timed-set .toggle-select { margin-top: 4px; }
+
+/* ---------- 新默書方式：定時畫面 ---------- */
+.dwell { height: 14px; margin: 18px 4px; border: 2px solid var(--orange-d); border-radius: 999px; background: #fff; overflow: hidden; }
+.dwell-fill {
+  height: 100%;
+  background: var(--orange);
+  transform-origin: left center;
+  animation: dwell var(--dwell) linear forwards;
+}
+@keyframes dwell { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.dwell.paused .dwell-fill { animation-play-state: paused; }
+/* 減少動態：倒數條係必要嘅進度指示，改用 20 級跳格，唔做平滑動畫 */
+@media (prefers-reduced-motion: reduce) {
+  .dwell-fill { animation-duration: var(--dwell) !important; animation-timing-function: steps(20, end); }
+}
+.speaker small { display: block; font-size: .9rem; font-weight: 700; line-height: 1.2; color: #fff; }   /* 白字 on --blue */
+.speaker.labeled { flex-direction: column; }
+.speaker.static { pointer-events: none; }
+.two-btns.nav { grid-template-columns: 1fr 1.4fr; gap: 10px; }
+.two-btns.nav .btn { font-size: 1.1rem; min-height: 64px; line-height: 1.25; padding-left: 10px; padding-right: 10px; }
+.two-btns.nav [data-action=selfPrev] { white-space: nowrap; }
+.rec-mode {
+  display: inline-block;
+  flex: none;
+  padding: 0 8px;
+  border: 1.5px solid var(--blue-d);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--blue-d);
+  font-size: .75rem;
+  font-weight: 700;
+}
+.result-card > .rec-mode { margin-bottom: 6px; }
+
+/* ---------- 新默書方式：對答案 ---------- */
+.review-card h2 { margin-bottom: 4px; }
+.rv-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.rv-word {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;   /* 第一行：詞語＋「✗ 錯」；第二行：提示句（長句唔會壓扁詞語） */
+  align-items: center;
+  column-gap: 10px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 12px;
+  text-align: left;
+  color: var(--text);
+  background: #fff;
+  border: 2px solid var(--line);
+  border-radius: 16px;
+  touch-action: manipulation;
+}
+.rv-text { grid-column: 1; grid-row: 1; font-family: var(--font-kai); font-size: 1.6rem; line-height: 1.3; overflow-wrap: anywhere; }
+.rv-hint { grid-column: 1 / -1; grid-row: 2; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
+.rv-flag { grid-column: 2; grid-row: 1; display: none; padding: 0 10px; border-radius: 999px; background: var(--red-d); color: #fff; font-weight: 800; white-space: nowrap; }
+.rv-row.bad .rv-word { border-color: var(--red); background: #FFE1E3; color: var(--text); }
+.rv-row.bad .rv-hint { color: var(--text); }
+.rv-row.bad .rv-flag { display: inline-block; }
+.rv-chars { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px 12px; }
+.rv-ch {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 6px;
+  font-family: var(--font-kai);
+  font-size: 1.4rem;
+  color: var(--text);
+  background: #fff;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  touch-action: manipulation;
+}
+.rv-ch[aria-pressed=true] { background: #FFE1E3; border-color: var(--red); color: var(--red-d); box-shadow: 0 2px 0 var(--red-d); }
+.rv-ch[aria-pressed=true]::after { content: '✗'; font-family: var(--font-ui); font-size: .8rem; font-weight: 800; margin-left: 2px; }
+.rv-bar {
+  position: sticky;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 10px 14px;
+  background: var(--card);
+  border: 2px solid var(--line);
+  border-radius: 22px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, .06);
+}
+.rv-count { font-weight: 800; }
+@media (max-width: 430px) {
+  .rv-bar { flex-wrap: wrap; }
+  .rv-bar .btn { flex: 1 1 100%; }
+}
+
 /* ---------- 列印：A4 直向，只印練習紙 ---------- */
 @page { size: A4 portrait; margin: 12mm 14mm; }
 @media print {

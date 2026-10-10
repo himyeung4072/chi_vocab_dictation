@@ -38,6 +38,19 @@ const SHARE_TEXT_MAX = 5000;     // 分享課文：文字最多幾多個字（�
 const SHARE_PAYLOAD_MAX = 20000; // 分享連結 #lesson= 後面最多幾多字元（中文 UTF-8 每字 3 byte，base64 約 4 字元）
 const SHARE_LESSONS_MAX = 100;   // 一位同學最多幾多課（只喺加入分享課文時檢查）
 const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
+const QUIZ_MODES = { normal: { label: '逐題自評', tag: '' }, timed: { label: '定時默書', tag: '定時' }, self: { label: '自助默書', tag: '自助' } };
+const TIER_LABELS = ['2 字或以下', '3 字', '4 字', '5 字或以上'];
+const TIMED_SECS_DEFAULT = [8, 10, 12, 15];
+const TIMED_SECS_MIN = 3, TIMED_SECS_MAX = 60;
+const TIMED_READS_DEFAULT = 2, TIMED_READS_MAX = 3;
+const TIMED_PREP_MS = 3000;     // 定時默書開始前嘅預備時間（可暫停）
+const TIMED_MIN_SLOT_S = 2.5;   // 每次朗讀最少預留秒數（秒數 ÷ 次數 < 2.5 就喺設定頁警告，唔強制）
+const SELF_SPEAK_DELAY = 250;   // 自助：切換詞語後等 250ms 先朗讀，連撳時只讀最後一個
+const CLICK_GUARD_MS = 500;     // 進入對答案／結果頁後，短時間內忽略點擊（防連點誤觸新畫面）
+const SELF_LAST_GUARD_MS = 800; // 自助：剛切到最後一個詞語後，呢段時間內忽略「完成，對答案」
+const TIMED_LIVE_MAX_MS = 3000; // 定時：朗讀開始後超過呢個時間仍冇收到 onend，暫停時都當已讀完（唔重讀）
+const TIMED_DUE_SLACK_MS = 250; // 定時：暫停結算 elapsed 時，容許超出下一事件到期時間嘅上限
+const NEW_BLUR = ['selfPrev', 'selfNext', 'selfRepeat', 'selfSlow', 'selfHint', 'selfLang', 'timedToggle'];   // 滑鼠／觸控撳完要 blur，等快捷鍵繼續生效
 const BANK_COUNT_DEFAULT = 10;     // 錯字怪獸模式預設默幾多個錯字
 const PRINT_CELLS = [2, 3, 4, 6];   // 列印：每字幾格（詞語重複寫幾次）
 const PRINT_DEFAULTS = { mode: 'practice', cells: 4, trace: true, hints: true, answers: true };
@@ -152,7 +165,9 @@ let ui = {
   backupSnoozed: false,  // 撳咗「之後再講」：今次開 app 唔再提醒備份
   pinUntil: 0,           // 家長 PIN 解鎖到幾時（毫秒時間戳）；只存記憶體，重新整理即鎖
   printOpts: null,       // 列印練習紙選項（只存記憶體；null = 用 PRINT_DEFAULTS）
-  print: null            // 目前開住嘅列印預覽快照 { model }；null = 冇開
+  print: null,           // 目前開住嘅列印預覽快照 { model }；null = 冇開
+  clickGuardUntil: 0,    // performance.now() 時間戳：喺呢個時間之前忽略點擊（進入對答案／結果頁後防連點）
+  lastInputKbd: false    // 最近一次操作係咪鍵盤（click 的 detail === 0 或 keydown）
 };
 
 /* ---------- 小工具 ---------- */
@@ -398,6 +413,7 @@ function cleanHistory(list) {
     h.correct = Math.min(numOr(h.correct, 0), h.total);
     h.label = typeof h.label === 'string' ? h.label : String(h.label == null ? '' : h.label);
     h.lang = h.lang === 'cmn' ? 'cmn' : 'yue';
+    h.mode = h.mode === 'timed' || h.mode === 'self' ? h.mode : 'normal';   // 只接受白名單；舊紀錄、惡意值一律當原有模式
     h.incomplete = h.incomplete === true;
     h.planned = h.incomplete ? Math.max(h.total, numOr(h.planned, h.total)) : h.total;
     h.wrong = Array.isArray(h.wrong) ? cleanWords(h.wrong) : [];
@@ -470,6 +486,19 @@ function cleanTimestamp(x) {
 /* 聲音 id（prefs.voiceYue／voiceCmn／舊版 voiceURI）：只接受非空字串，最多 200 字元，否則當作「自動」（空字串） */
 function cleanVoiceURI(x) {
   return typeof x === 'string' && x.length > 0 && x.length <= 200 ? x : '';
+}
+
+/* 定時默書設定（prefs.timed）：secs 係四級（2 字或以下／3／4／5+）停留秒數，reads 係每個詞語朗讀次數。
+   任何型別錯誤、超出範圍都夾返或回退預設；輸出係新物件，多餘欄位一律丟棄；唔 throw */
+function cleanTimedPrefs(x) {
+  const t = isObj(x) ? x : {};
+  const raw = Array.isArray(t.secs) ? t.secs : [];
+  const secs = TIMED_SECS_DEFAULT.map(function (d, i) {
+    const n = numOr(raw[i], NaN);   // numOr 已擋非數字／NaN／Infinity，並把負數變 0
+    return Number.isFinite(n) ? Math.min(TIMED_SECS_MAX, Math.max(TIMED_SECS_MIN, Math.round(n))) : d;
+  });
+  const r = numOr(t.reads, NaN);
+  return { secs: secs, reads: Number.isInteger(r) && r >= 1 && r <= TIMED_READS_MAX ? r : TIMED_READS_DEFAULT };
 }
 
 /* 朗讀語言對應嘅聲音欄位：廣東話 voiceYue、普通話 voiceCmn（LANGS 只有兩個語言） */
@@ -574,7 +603,8 @@ function normaliseStudent(st) {
     voiceYue: cleanVoiceURI(pf.voiceYue),        // 廣東話揀咗嘅朗讀聲音；空 = 自動
     voiceCmn: cleanVoiceURI(pf.voiceCmn),        // 普通話揀咗嘅朗讀聲音；空 = 自動
     voiceURI: cleanVoiceURI(pf.voiceURI),        // 舊版單一聲音；待 migrateLegacyVoice 按聲音語言遷到 voiceYue／voiceCmn，遷完清空
-    shortcuts: pf.shortcuts !== false            // 默書鍵盤快捷鍵；只有明確 false 先關，舊資料／舊備份冇此欄位當開
+    shortcuts: pf.shortcuts !== false,           // 默書鍵盤快捷鍵；只有明確 false 先關，舊資料／舊備份冇此欄位當開
+    timed: cleanTimedPrefs(pf.timed)             // 定時默書設定；舊資料／舊備份冇此欄位就用預設
   };
   st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
   st.avatar = AVATARS.indexOf(st.avatar) !== -1 ? st.avatar : AVATARS[0];
@@ -687,9 +717,11 @@ function newStudent(name, grade, avatar) {
 }
 
 /* ---------- 畫面切換 ---------- */
-const timers = { speak: null, adv: null, lock: null };
+const timers = { speak: null, adv: null, lock: null, run: null };
 
 function clearTimers() {
+  clearTimeout(timers.run);
+  timers.run = null;
   clearTimeout(timers.speak);
   clearTimeout(timers.adv);
   clearTimeout(timers.lock);
@@ -1167,6 +1199,7 @@ let lastScreen = null;   // 上一次畫咗邊個「畫面」（默書按題目�
 /* 「畫面」身份：換咗先搬焦點；同一畫面內重畫（例如切換選項）唔搶焦點 */
 function screenKey() {
   const q = ui.quiz;
+  if (ui.view === 'quiz' && q && q.mode && q.mode !== 'normal') return 'quiz:' + q.mode + ':' + q.phase;   // 新方式：換詞語唔搶焦點
   return ui.view === 'quiz' && q ? 'quiz:' + q.idx + ':' + q.phase : ui.view;
 }
 
@@ -1204,6 +1237,12 @@ function findBySig(sig) {
 function announceScreen() {
   const q = ui.quiz;
   if (ui.view !== 'quiz' || !q) return;
+  if (q.mode && q.mode !== 'normal') {   // 定時 run 唔喺度公佈：timedBegin 逐個詞語自己公佈
+    if (q.phase === 'prep') announce('預備，稍後開始自動朗讀');
+    else if (q.phase === 'run' && q.mode === 'self') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 個');
+    else if (q.phase === 'review') announce('默書完成，請對答案：點選寫錯嘅詞語');
+    return;
+  }
   if (q.phase === 'listen') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 題');
   else if (q.phase === 'answer') {   // 焦點喺「答案係」，跟住讀出答案（有提示句一併讀）
     const word = q.words[q.idx];
@@ -1853,6 +1892,7 @@ function setupView(s) {
     '<span class="field-label">默邊度？</span>' +
     group('source', chip('source', 'lessons', '📚 課文') + chip('source', 'bank', '👾 錯字怪獸')) +
     '<div style="margin-top:14px">' + sourceBlock + '</div></div>' +
+    modeCardHtml(c) +
     (c.source === 'bank'
       ? '<button class="btn ghost small block" style="margin-top:12px" data-action="printBank"' + (bankWords.length ? '' : ' disabled') + ' aria-label="列印錯字練習紙">🖨️ 列印錯字練習紙</button>'
       : '') +
@@ -1892,7 +1932,7 @@ function settingsView(s) {
     '<span class="field-label" id="shortcutsLabel">鍵盤快捷鍵</span>' +
     '<div class="toggle-select" data-group="shortcuts" role="group" aria-labelledby="shortcutsLabel">' +
     shortcutChip(true, '開') + shortcutChip(false, '關') + '</div>' +
-    '<p class="muted" style="margin-top:6px">默書時用空白、Enter、1、2 操作。語音輸入或讀屏軟件用家可以關閉，避免誤觸。</p>' +
+    '<p class="muted" style="margin-top:6px">默書時用空白、Enter、1、2 操作；自助默書另可用 ←、→，定時默書用空白暫停／繼續。語音輸入或讀屏軟件用家可以關閉，避免誤觸。</p>' +
     '<div id="voicePicker">' + voicePickerHtml(s) + '</div>' +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
     '<div id="voiceNotice">' + voiceNoticeHtml(voiceLangKey(s)) + '</div></div>' +
@@ -1931,7 +1971,8 @@ function initSetup(s, source) {
   let ids = s.prefs.lastLessonIds.filter(function (id) { return exists.has(id); });
   if (!ids.length && s.lessons.length) ids = [s.lessons[s.lessons.length - 1].id];
   ui.setup = {
-    source: source, lessonIds: ids, count: countDefault(source)   // count：數字 = 默幾多個；null = 全部
+    source: source, lessonIds: ids, count: countDefault(source),   // count：數字 = 默幾多個；null = 全部
+    mode: 'normal'   // 默書方式：normal／timed／self；每次入設定頁都重設為逐題自評
   };
 }
 
@@ -2018,10 +2059,10 @@ function preloadAnswerFont(words) {
 }
 
 /* ---------- 默書畫面 ---------- */
-function langSwitch(q) {
+function langSwitch(q, action) {
   return '<div class="lang-switch" role="group" aria-label="朗讀語言">' +
     ['cmn', 'yue'].map(function (k) {
-      return '<button class="lang-btn' + (q.curLang === k ? ' on' : '') + '" data-action="setWordLang" data-val="' + k + '"' + pressed(q.curLang === k) + '>' + LANGS[k].label + '</button>';
+      return '<button class="lang-btn' + (q.curLang === k ? ' on' : '') + '" data-action="' + (action || 'setWordLang') + '" data-val="' + k + '"' + pressed(q.curLang === k) + '>' + LANGS[k].label + '</button>';
     }).join('') + '</div>';
 }
 
@@ -2114,6 +2155,7 @@ function feedbackHtml(s, q, word) {
 
 function quizView(s) {
   const q = ui.quiz;
+  if (q.mode && q.mode !== 'normal') return newModeView(s, q);
   const total = q.words.length;
   const word = q.words[q.idx];
   let body;
@@ -2135,10 +2177,107 @@ function quizView(s) {
     '<div class="card quiz-card' + cls + '">' + body + '</div>';
 }
 
+/* ----- 新默書方式畫面（純回傳 HTML，冇副作用；詞語／提示句一律 esc） ----- */
+/* 頂部：沿用 quizView 同一組 class（.quit／.track／.fill／.runner／.flag／.count），afterQuizRender 靠佢做進度動畫 */
+function newTopHtml(s, q, countText) {
+  return '<div class="quiz-top"><button class="quit" data-action="quit" aria-label="' + (q.phase === 'review' ? '離開對答案' : '停止默書') + '">✕</button>' +
+    '<div class="track"><div class="fill" style="width:' + (q.shown * 100) + '%"></div>' +
+    '<div class="runner" style="left:calc((100% - 32px) * ' + q.shown + ')">' + esc(s.avatar) + '</div>' +
+    '<span class="flag">🏁</span></div>' +
+    '<div class="count">' + countText + '</div></div>';
+}
+
+function newModeView(s, q) {
+  if (q.phase === 'review') return reviewView(s, q);
+  return q.mode === 'timed' ? timedView(s, q) : selfView(s, q);
+}
+
+/* 定時畫面：DOM 內唔會出現當前詞語、提示句或字數 */
+function timedView(s, q) {
+  const t = q.t, n = q.words.length;
+  const prep = q.phase === 'prep' || !t;
+  const paused = !!(t && t.paused);
+  let body;
+  if (prep) {
+    const w = voiceWarning(q.lang);
+    body = '<p class="prompt" data-focus>預備…稍後自動朗讀</p>' + (w ? '<p class="muted">' + esc(w) + '</p>' : '');
+  } else {
+    body = '<p class="prompt" data-focus>第 ' + (q.idx + 1) + ' / ' + n + ' 個</p>';
+  }
+  const bar = !prep
+    ? '<div class="dwell' + (paused ? ' paused' : '') + '" aria-hidden="true"><div class="dwell-fill" style="--dwell:' + t.D + 'ms;animation-delay:-' + Math.round(clockMs(t)) + 'ms"></div></div>'
+    : '';
+  const status = paused ? (t.reason === 'hidden' ? '已暫停（你離開咗頁面），撳繼續' : '已暫停') : '';
+  return newTopHtml(s, q, prep ? '預備' : (q.idx + 1) + ' / ' + n) +
+    '<div class="card quiz-card">' + body +
+    '<div class="speaker static" id="speakerBtn" aria-hidden="true">🔊</div>' + bar +
+    '<p class="status" id="status">' + status + '</p>' +
+    '<button class="btn ghost block" id="timedBtn" data-action="timedToggle" aria-label="' + (paused ? '繼續默書' : '暫停默書') + '">' + (paused ? '▶ 繼續' : '⏸ 暫停') + '</button>' +
+    (shortcutsOn() ? '<p class="kbd-hint">快捷鍵：<span>空白 = 暫停／繼續</span></p>' : '') +
+    '</div>';
+}
+
+/* 自助畫面：唔顯示詞語同提示句文字（提示句只朗讀） */
+function selfView(s, q) {
+  const n = q.words.length;
+  const first = q.idx === 0, last = q.idx === n - 1;
+  const hasHint = !!(q.hints && q.hints[q.words[q.idx]]);
+  return newTopHtml(s, q, (q.idx + 1) + ' / ' + n) +
+    '<div class="card quiz-card">' +
+    '<p class="prompt" data-focus>聽下，寫喺紙上面 ✏️</p>' +
+    '<button class="speaker labeled" id="speakerBtn" data-action="selfRepeat" aria-label="重讀">🔊<small>重讀</small></button>' +
+    '<div class="status" id="status"></div>' +
+    langSwitch(q, 'selfLang') +
+    '<div class="read-row"><button class="btn ghost small" data-action="selfSlow">🐢 再讀慢啲</button>' +
+    (hasHint ? '<button class="btn ghost small" id="hintBtn" data-action="selfHint">💡 提示句</button>' : '') + '</div>' +
+    '<div class="two-btns nav">' +
+    '<button class="btn ghost" id="prevBtn" data-action="selfPrev"' + (first ? ' disabled' : '') + '>⬅ 上一個</button>' +
+    '<button class="btn green" id="nextBtn" data-action="selfNext">' + (last ? '完成，對答案 ✓' : '下一個 ➡') + '</button></div>' +
+    (shortcutsOn()
+      ? '<p class="kbd-hint">快捷鍵：<span>← 上一個</span> <span>→ 下一個</span> <span>空白 = 重讀</span> <span>Enter = 下一個</span></p>' +
+        '<p class="kbd-hint">焦點喺按鈕上（例如用 Tab 揀咗掣）時，空白／Enter 會直接撳該掣</p>'
+      : '') +
+    '</div>';
+}
+
+/* 對答案：整份詞語清單，點詞語切換「錯」；錯而且 ≥ 2 字先展開逐字掣（唔揀都得） */
+function reviewView(s, q) {
+  const n = q.words.length, bad = rvCount(q);
+  const rows = q.words.map(function (w, i) {
+    const wrong = q.rv.wrong[i];
+    const hint = q.hints ? q.hints[w] || '' : '';
+    const chars = Array.from(w);
+    let charBtns = '';
+    if (wrong && chars.length >= 2) {
+      charBtns = '<div class="rv-chars" role="group" aria-label="邊個字寫錯咗（可唔揀）">' + chars.map(function (c, j) {
+        if (/\s/.test(c)) return '';
+        const on = q.rv.bad[i].indexOf(j) !== -1;
+        return '<button class="rv-ch" data-action="rvChar" data-i="' + i + '" data-val="' + j + '"' + pressed(on) +
+          ' aria-label="第 ' + (j + 1) + ' 個字「' + esc(c) + '」，' + (on ? '已標記為寫錯' : '標記為寫錯') + '">' + esc(c) + '</button>';
+      }).join('') + '</div>';
+    }
+    return '<li class="rv-row' + (wrong ? ' bad' : '') + '">' +
+      '<button class="rv-word" data-action="rvToggle" data-i="' + i + '"' + pressed(wrong) +
+      ' aria-label="' + esc(w) + (wrong ? '，已標記為寫錯，撳一下取消' : '，撳一下標記為寫錯') + '">' +
+      '<span class="rv-text">' + esc(w) + '</span>' +
+      (hint ? '<small class="rv-hint">' + esc(hint) + '</small>' : '<span class="rv-hint"></span>') +
+      '<span class="rv-flag">✗ 錯</span></button>' + charBtns + '</li>';
+  }).join('');
+  return newTopHtml(s, q, '共 ' + n + ' 個') +
+    '<div class="card review-card"><h2 data-focus>對答案</h2>' +
+    '<p class="muted">點選寫錯嘅詞語；多字詞語可以再揀寫錯嘅字（唔揀都得）。</p>' +
+    '<ul class="rv-list">' + rows + '</ul></div>' +
+    '<div class="rv-bar"><span class="rv-count">錯 ' + bad + ' 個／共 ' + n + ' 個</span>' +
+    '<button class="btn green" data-action="rvConfirm">確認，記錄成績 ✓</button></div>';
+}
+
 /* 進度條嘅動物同進度要喺畫面出現後再移動，先有滑動效果 */
 function afterQuizRender() {
   const q = ui.quiz;
-  const target = (q.idx + (q.phase === 'feedback' ? 1 : 0)) / q.words.length;
+  const isNew = q.mode && q.mode !== 'normal';
+  const target = isNew
+    ? (q.phase === 'review' ? 1 : q.phase === 'prep' ? 0 : q.idx / q.words.length)
+    : (q.idx + (q.phase === 'feedback' ? 1 : 0)) / q.words.length;
   if (Math.abs(target - q.shown) < 0.0001) return;
   const runner = document.querySelector('.runner');
   const fill = document.querySelector('.track .fill');
@@ -2183,10 +2322,11 @@ function resultView(s) {
     extra += '<p class="muted bank-left">尚餘 ' + Number(r.bankLeft) + ' 個錯字未溫，撳「再默一次」繼續打怪獸。</p>';
   }
 
-  const srTitle = r.incomplete ? '默書未完成：答咗 ' + r.total + ' / ' + r.planned + ' 題' :
-    '默書完成：答啱 ' + r.correct + ' / ' + r.total + ' 題';
+  const srPrefix = r.mode === 'timed' || r.mode === 'self' ? QUIZ_MODES[r.mode].label + '，' : '';
+  const srTitle = srPrefix + (r.incomplete ? '默書未完成：答咗 ' + r.total + ' / ' + r.planned + ' 題' :
+    '默書完成：答啱 ' + r.correct + ' / ' + r.total + ' 題');
   return '<h2 class="sr-only">' + srTitle + '</h2>' +
-    '<div class="card result-card"><div class="mascot">' + mascot + '</div>' + head +
+    '<div class="card result-card"><div class="mascot">' + mascot + '</div>' + modeTagHtml(r.mode) + head +
     '<p>' + msg + '</p>' + extra + '</div>' +
     '<div class="stack" style="margin-top:20px">' +
     '<button class="btn block" data-action="again">再默一次 🔁</button>' +
@@ -2194,12 +2334,17 @@ function resultView(s) {
     '<button class="btn ghost block" data-action="goMenu">返主頁 🏠</button></div>';
 }
 
+/* 默書方式小標籤（定時／自助）；mode 先用嚴格相等白名單，唔直接索引 QUIZ_MODES */
+function modeTagHtml(mode) {
+  return mode === 'timed' || mode === 'self' ? '<span class="rec-mode">' + esc(QUIZ_MODES[mode].tag) + '</span>' : '';
+}
+
 function recRow(h) {
   const p = pct(h.correct, h.total);
   const cls = h.incomplete ? ' inc' : p >= 80 ? '' : p >= 50 ? ' mid' : ' low';
   return '<div class="rec"><button class="rec-main" data-action="openRecord" data-id="' + esc(h.id) + '">' +
     '<span class="rec-time">' + shortDate(h.date) + ' ' + timeLabel(h.date) + '</span>' +
-    '<span class="rec-label">' + esc(h.label) + '</span>' +
+    '<span class="rec-label">' + esc(h.label) + '</span>' + modeTagHtml(h.mode) +
     (h.incomplete ? '<span class="rec-tag">未完成</span>' : '') +
     '<span class="rec-score' + cls + '">' + h.correct + '/' + h.total + '</span></button>' +
     '<button class="icon-btn" data-action="deleteRecord" data-id="' + esc(h.id) + '" aria-label="刪除呢次紀錄">🗑</button></div>';
@@ -2338,6 +2483,7 @@ function recordView(s) {
     '<div class="card"><div class="day-head"><div class="t"><h2>' + esc(h.label) + '</h2>' +
     '<div class="muted">' + dayLabel(h.date) + ' ' + timeLabel(h.date) + '</div>' +
     '<div class="muted">預設朗讀：' + (LANGS[h.lang] || LANGS.yue).label + '</div>' +
+    (modeTagHtml(h.mode) ? '<div>' + modeTagHtml(h.mode) + '</div>' : '') +
     (h.incomplete ? '<div class="rec-tag">未完成：答咗 ' + h.total + ' / ' + h.planned + ' 題</div>' : '') + '</div>' +
     '<span class="rec-score' + (h.incomplete ? ' inc' : p >= 80 ? '' : p >= 50 ? ' mid' : ' low') + '">' + h.correct + '/' + h.total + '</span></div>' +
     '<div style="margin-top:8px">' + list + '</div></div>' +
@@ -2483,6 +2629,7 @@ function finishQuiz(s) {
     source: q.source,
     lang: q.lang,
     total: q.results.length,   // 實際答咗嘅題數
+    mode: q.mode || 'normal',   // normal／timed／self
     planned: q.words.length,   // 原定題數
     incomplete: q.results.length < q.words.length,
     correct: correct,
@@ -2499,7 +2646,7 @@ function finishQuiz(s) {
     bankLeft = Object.keys(s.bank).filter(function (w) { return !answered.has(w); }).length;
   }
   ui.result = {
-    total: rec.total, planned: rec.planned, incomplete: rec.incomplete,
+    total: rec.total, planned: rec.planned, incomplete: rec.incomplete, mode: rec.mode,
     correct: correct, wrong: wrong, recordId: rec.id,
     added: q.added, removed: q.removed, hurt: q.hurt, bankLeft: bankLeft
   };
@@ -2795,6 +2942,8 @@ Object.assign(actions, {
     lockPin();   // 開始默書通常係交畀小朋友，家長 PIN 即鎖
     const s = me();
     const c = ui.setup;
+    const mode = c.mode === 'timed' || c.mode === 'self' ? c.mode : 'normal';   // 白名單
+    if (mode === 'timed' && !('speechSynthesis' in window)) { toast('呢個瀏覽器唔支援朗讀，用唔到定時默書'); return; }
     let words = [];
     let label = '';
     let hints;
@@ -2836,12 +2985,29 @@ Object.assign(actions, {
     ui.quiz = {
       source: c.source, label: label, words: words, idx: 0, results: [],
       added: [], removed: [], hurt: [], lang: p.lang, speed: p.speed, shown: 0,
-      hints: hints, hintSpeed: p.hintSpeed
+      hints: hints, hintSpeed: p.hintSpeed,
+      mode: mode, curLang: p.lang, seq: 0, rv: null, committed: false, aborted: false, t: null, stepAt: 0
     };
     preloadAnswerFont(words);
-    prepareQuestion(false);  // 第一題跟住畫面入場動畫，唔使再滑入
-    go('quiz');
-    scheduleSpeak(FIRST_DELAY);
+    if (mode === 'timed') {
+      ui.quiz.phase = 'prep';
+      go('quiz');
+      timedBegin(-1, 0);
+    } else if (mode === 'self') {
+      const q = ui.quiz;
+      q.phase = 'run';
+      q.stepAt = performance.now();   // 單詞語課文：開始後 SELF_LAST_GUARD_MS 內亦唔受理「完成，對答案」
+      go('quiz');
+      if (!('speechSynthesis' in window)) setSelfStatus('呢個瀏覽器唔支援朗讀，自助默書冇聲音');
+      else {
+        setSelfStatus(WAIT_HTML, true);
+        timers.run = setTimeout(selfSpeak, FIRST_DELAY);
+      }
+    } else {
+      prepareQuestion(false);  // 第一題跟住畫面入場動畫，唔使再滑入
+      go('quiz');
+      scheduleSpeak(FIRST_DELAY);
+    }
   },
   again: function () {
     if (ui.setup) actions.startQuiz(); else go('menu');
@@ -2925,6 +3091,7 @@ Object.assign(actions, {
     render();
   },
   quit: function () {
+    if (ui.quiz && ui.quiz.mode !== 'normal') { quitNew(ui.quiz); return; }   // 定時／自助：停止唔記錄任何嘢
     // 確認框打開期間暫停：唔朗讀、唔轉下一題
     clearTimers();
     currentUtterance = null;   // 被 cancel 嘅句子唔好觸發 onend（否則會提早解鎖「睇答案」）
@@ -2947,6 +3114,438 @@ Object.assign(actions, {
     });
   }
 });
+
+/* ---------- 新默書方式：定時全自動／學生自助 ----------
+   兩種方式都唔即時寫統計：默寫完進入「對答案」（review）階段，家長確認後由 commitReview 批量
+   調用既有 recordAnswer，再交畀 finishQuiz 寫入紀錄。中途停止唔記錄任何嘢。 */
+
+/* 字數：去咗空白之後嘅字元數 */
+function wordLen(w) { return Array.from(String(w)).filter(function (c) { return !/\s/.test(c); }).length; }
+/* 字數 → 四級（0..3）；1 字併入「2 字或以下」 */
+function tierOf(n) { return Math.min(Math.max(n, 2), 5) - 2; }
+function dwellMs(prefs, w) { return prefs.timed.secs[tierOf(wordLen(w))] * 1000; }
+/* n 次朗讀平均分佈喺停留時間 D 內：第 k 次喺第 k 格時間槽嘅起點開始，最後一次起點 < D */
+function readOffsets(D, n) { return Array.from({ length: n }, function (_, k) { return Math.round(k * D / n); }); }
+
+/* 時鐘：一段 = 預備（seg = -1）或一個詞語（seg = 0…n-1）。虛擬時間 = elapsed + 本段運行時間 */
+function newClock(seg, D, offs, carry) {
+  return {
+    seg: seg, D: D, offs: offs, nextRead: 0,   // nextRead：下一次未開始嘅朗讀下標
+    live: -1, liveEnded: true, liveAt: 0, redo: false,   // live：最近開始嘅朗讀下標；liveEnded：收到完結事件；liveAt：呢次朗讀開始時嘅 clockMs
+    dueAt: 0,                                  // 下一個事件嘅 clockMs，武裝 timer 時寫入，供暫停時夾住 elapsed
+    elapsed: carry || 0, since: null,          // since = null 代表暫停或未開始
+    paused: false, reason: '', seq: 0          // seq：令舊朗讀嘅 hook 失效
+  };
+}
+function clockMs(t) { return t.elapsed + (t.since == null ? 0 : performance.now() - t.since); }
+
+function timedAlive(q) { return ui.view === 'quiz' && ui.quiz === q && !q.aborted && q.mode === 'timed' && q.phase !== 'review'; }
+
+/* 開始一段（seg = -1 預備，否則第 seg 個詞語）；carry = 上一段遲到嘅毫秒 */
+function timedBegin(seg, carry) {
+  const q = ui.quiz;
+  q.idx = Math.max(seg, 0);
+  q.phase = seg < 0 ? 'prep' : 'run';
+  const D = seg < 0 ? TIMED_PREP_MS : dwellMs(me().prefs, q.words[seg]);
+  q.t = newClock(seg, D, seg < 0 ? [] : readOffsets(D, me().prefs.timed.reads), carry);
+  render();   // 倒數條用 animation-delay:-clockMs 還原位置
+  if (seg >= 0) announce('第 ' + (seg + 1) + ' / ' + q.words.length + ' 個');
+  q.t.since = performance.now();
+  timedFire();
+}
+
+/* 核心：只喺運行中（since != null）執行，每次只武裝一個 timeout，指向下一個事件（朗讀或詞語結束） */
+function timedFire() {
+  const q = ui.quiz, t = q && q.t;
+  timers.run = null;
+  if (!t || t.since == null || !timedAlive(q)) return;
+  const el = clockMs(t);
+  let due = -1;
+  while (t.nextRead < t.offs.length && el >= t.offs[t.nextRead] - 4) { due = t.nextRead; t.nextRead += 1; }
+  if (due >= 0) timedRead(q, t, due);   // 同一刻多次到期（極端延遲）只讀最後一次
+  if (el >= t.D - 4) { timedEnd(q, el - t.D); return; }
+  const next = Math.min(t.nextRead < t.offs.length ? t.offs[t.nextRead] : Infinity, t.D);
+  t.dueAt = next;
+  timers.run = setTimeout(timedFire, Math.max(0, next - el));
+}
+
+/* 朗讀一次。一律 0ms 延後 speak()，令 timedEnd 嘅硬取消同下一個詞語首句分屬不同 task；唔影響時間線 */
+function timedRead(q, t, k) {
+  t.live = k; t.liveEnded = false; t.liveAt = clockMs(t);
+  const seq = (t.seq += 1);
+  const same = function () { return ui.quiz === q && q.t === t && t.seq === seq; };
+  clearTimeout(timers.speak);
+  timers.speak = setTimeout(function () {
+    timers.speak = null;
+    if (!same() || t.since == null) return;   // 期間已暫停／換詞語／離開：唔讀
+    speak(q.words[q.idx], q.lang, SPEEDS[q.speed].rate, {
+      onstart: function () { if (same()) setSpeaking(true); },
+      onend: function () { if (same()) { t.liveEnded = true; setSpeaking(false); } }   // onerror 同樣走 onend（speak() 已綁定）
+    });
+  }, 0);
+}
+
+/* 一段完結：硬切斷仍在進行或未發聲嘅朗讀，唔同下一個詞語重疊 */
+function timedEnd(q, late) {
+  const t = q.t;
+  clearTimeout(timers.speak); timers.speak = null;
+  t.seq += 1; currentUtterance = null; stopSpeech();
+  if (t.seg >= q.words.length - 1) { enterReview(); return; }
+  timedBegin(t.seg + 1, Math.min(250, Math.max(0, late)));   // 遲到量帶入下一段，上限 250ms
+}
+
+/* 暫停：返回「呢次呼叫之前係咪運行緊」。reason：'user'（掣／快捷鍵）、'hidden'（頁面隱藏）、'dialog'（確認框期間） */
+function timedPause(reason) {
+  const q = ui.quiz, t = q && q.t;
+  if (!q || !t || !timedAlive(q) || t.since == null) return false;
+  clearTimeout(timers.run); timers.run = null;
+  clearTimeout(timers.speak); timers.speak = null;
+  const now = clockMs(t);
+  // 夾住 elapsed：若瀏覽器先凍結 timer、之後才派發 hidden，now 會包含凍結時間；最多容許超出下一事件到期時間 TIMED_DUE_SLACK_MS
+  t.elapsed = Math.min(now, Math.max(t.dueAt, 0) + TIMED_DUE_SLACK_MS);
+  t.since = null; t.paused = true; t.reason = reason;
+  // 朗讀到一半被截斷，繼續時先重讀；超過 TIMED_LIVE_MAX_MS 仲未收到 onend（例如 iOS 漏發）當已讀完
+  t.redo = t.live >= 0 && !t.liveEnded && (t.elapsed - t.liveAt) < TIMED_LIVE_MAX_MS;
+  t.seq += 1; currentUtterance = null; stopSpeech(); setSpeaking(false);
+  timedPausedUi(true, reason);
+  return true;
+}
+
+function timedResume() {
+  const q = ui.quiz, t = q && q.t;
+  if (!q || !t || t.since != null || !timedAlive(q)) return;
+  const was = t.reason;
+  t.paused = false; t.reason = ''; t.since = performance.now();
+  timedPausedUi(false, was);
+  if (t.redo) { t.redo = false; timedRead(q, t, t.live); }   // 同一個下標，nextRead 不變，所以完整讀完次數不變
+  timedFire();
+}
+
+/* 只改 DOM，唔 render()：倒數條停喺原位，繼續後由原位續跑。#status 純視覺，公佈只走 announce() */
+function timedPausedUi(on, reason) {
+  const q = ui.quiz, t = q && q.t;
+  if (!t) return;
+  const d = document.querySelector('.dwell');
+  if (d) d.classList.toggle('paused', on);
+  const b = document.getElementById('timedBtn');
+  if (b) {
+    b.textContent = on ? '▶ 繼續' : '⏸ 暫停';
+    b.setAttribute('aria-label', on ? '繼續默書' : '暫停默書');
+  }
+  const st = document.getElementById('status');
+  if (st) st.textContent = on ? (reason === 'hidden' ? '已暫停（你離開咗頁面），撳繼續' : '已暫停') : '';
+  if (reason !== 'dialog') announce(on ? (reason === 'hidden' ? '已暫停，你離開咗頁面' : '已暫停') : '繼續默書');
+  // 只有鍵盤啟動嘅暫停同頁面隱藏造成嘅暫停先搬焦點去「繼續」；滑鼠／觸控維持 blur，等空白快捷鍵繼續生效
+  if (on && b && ((reason === 'user' && ui.lastInputKbd) || reason === 'hidden')) focusEl(b);
+}
+
+Object.assign(actions, {
+  timedToggle: function () {
+    const q = ui.quiz;
+    if (!q || q.mode !== 'timed' || q.t == null) return;
+    if (q.t.paused) timedResume(); else timedPause('user');
+  }
+});
+
+/* ----- 自助默書 ----- */
+/* 狀態列：asHtml 只可以傳常數 WAIT_HTML；其餘一律 textContent */
+function setSelfStatus(text, asHtml) {
+  const st = document.getElementById('status');
+  if (!st) return;
+  if (asHtml) st.innerHTML = text; else st.textContent = text;
+}
+
+/* 取消排程中同進行中嘅朗讀；所有切換都先經佢（q.seq 令舊 hook 失效） */
+function selfCancel() {
+  const q = ui.quiz;
+  clearTimeout(timers.run); timers.run = null;
+  if (q) q.seq += 1;
+  currentUtterance = null; stopSpeech(); setSpeaking(false);
+}
+
+function selfSpeak(rate) {
+  const q = ui.quiz;
+  timers.run = null;
+  if (!q || q.mode !== 'self' || q.phase !== 'run' || q.aborted || ui.view !== 'quiz') return;
+  const idx = q.idx, seq = (q.seq += 1);
+  const same = function () { return ui.quiz === q && q.idx === idx && q.seq === seq; };
+  setSelfStatus('');
+  speak(q.words[idx], q.curLang, typeof rate === 'number' ? rate : SPEEDS[q.speed].rate, {
+    onstart: function () { if (same()) setSpeaking(true); },
+    onend: function () { if (same()) setSpeaking(false); }
+  });
+}
+
+/* render() 之後：鍵盤用家焦點如果跌咗落 body／已 disabled 嘅掣，放去非按鈕嘅提示句，
+   咁空白／Enter 仍然係快捷鍵（重讀），唔會變成原生撳「下一個」 */
+function keepSelfFocus() {
+  const a = document.activeElement;
+  if (!ui.lastInputKbd) return;   // 滑鼠／觸控：維持 blur
+  if (a && a !== document.body && !a.disabled) return;
+  const t = $app.querySelector('[data-focus]');
+  if (t) focusEl(t);
+}
+
+/* 上一個／下一個 */
+function selfStep(delta) {
+  const q = ui.quiz;
+  const to = q.idx + delta;
+  if (q.phase !== 'run' || to < 0 || to >= q.words.length) return;
+  selfCancel();
+  q.idx = to; q.curLang = q.lang;
+  q.stepAt = performance.now();   // 最後一個詞語防連點用
+  render();
+  announce('第 ' + (to + 1) + ' / ' + q.words.length + ' 個');
+  keepSelfFocus();
+  setSelfStatus(WAIT_HTML, true);
+  timers.run = setTimeout(selfSpeak, SELF_SPEAK_DELAY);
+}
+
+/* click 同鍵盤（→、Enter）共用入口 */
+function selfNext() {
+  const q = ui.quiz;
+  if (!q || q.mode !== 'self' || q.phase !== 'run') return;
+  if (q.idx === q.words.length - 1) {
+    // 剛切到最後一個詞語 SELF_LAST_GUARD_MS 內忽略「完成，對答案」，防連點令學生未聽最後一個詞語就掉入不可返回嘅對答案
+    if (performance.now() - q.stepAt < SELF_LAST_GUARD_MS) return;
+    enterReview();
+    return;
+  }
+  selfStep(1);
+}
+
+function selfPrev() {
+  const q = ui.quiz;
+  if (!q || q.mode !== 'self' || q.phase !== 'run') return;
+  selfStep(-1);
+}
+
+Object.assign(actions, {
+  selfPrev: selfPrev,
+  selfNext: selfNext,
+  selfRepeat: function () {
+    const q = ui.quiz;
+    if (!q || q.mode !== 'self' || q.phase !== 'run') return;
+    selfCancel(); selfSpeak();
+  },
+  selfSlow: function () {
+    const q = ui.quiz;
+    if (!q || q.mode !== 'self' || q.phase !== 'run') return;
+    selfCancel(); selfSpeak(SLOW_RATE);
+  },
+  // 提示句：只朗讀，畫面唔顯示句子；同語言、同聲音、hintSpeed 速度
+  selfHint: function () {
+    const q = ui.quiz;
+    if (!q || q.mode !== 'self' || q.phase !== 'run') return;
+    const hint = q.hints ? q.hints[q.words[q.idx]] || '' : '';
+    if (!hint) return;
+    selfCancel();
+    const idx = q.idx, seq = (q.seq += 1);
+    const same = function () { return ui.quiz === q && q.idx === idx && q.seq === seq; };
+    setSelfStatus('');
+    speak(hint, q.curLang, SPEEDS[q.hintSpeed || q.speed].rate, {
+      onstart: function () { if (same()) setSpeaking(true); },
+      onend: function () { if (same()) setSpeaking(false); }
+    });
+  },
+  selfLang: function (el) {
+    const q = ui.quiz, val = el.dataset.val;
+    if (!q || q.mode !== 'self' || q.phase !== 'run' || !hasKey(LANGS, val)) return;   // 非法值靜默忽略
+    q.curLang = val;
+    Array.prototype.forEach.call(el.parentElement.children, function (x) {
+      x.classList.toggle('on', x === el);
+      x.setAttribute('aria-pressed', String(x === el));
+    });
+    selfCancel(); selfSpeak();
+  }
+});
+
+/* ----- 對答案與結算（兩種新方式共用） ----- */
+function enterReview() {
+  const q = ui.quiz;
+  clearTimers(); currentUtterance = null; stopSpeech(); setSpeaking(false);
+  q.phase = 'review';
+  q.rv = { wrong: q.words.map(function () { return false; }), bad: q.words.map(function () { return []; }) };
+  ui.clickGuardUntil = performance.now() + CLICK_GUARD_MS;   // 防「完成，對答案」連點後第二下落喺清單上
+  render();
+  window.scrollTo(0, 0);
+}
+
+function rvCount(q) { return q.rv.wrong.filter(function (x) { return x; }).length; }
+
+/* 下標校驗：整數而且喺詞語範圍內 */
+function rvIndex(q, raw) {
+  const i = Number(raw);
+  return q && q.mode !== 'normal' && q.phase === 'review' && q.rv && Number.isInteger(i) && i >= 0 && i < q.words.length ? i : -1;
+}
+
+/* 結算：逐個詞語調用既有 recordAnswer，再交畀 finishQuiz 寫紀錄。q.committed 先上鎖，連點只寫一次 */
+function commitReview() {
+  const q = ui.quiz, s = me();
+  if (!q || q.mode === 'normal' || q.phase !== 'review' || q.committed) return;
+  if (!s) { toast('搵唔到同學資料，今次冇記錄'); go('home'); return; }
+  q.committed = true;
+  ui.clickGuardUntil = performance.now() + CLICK_GUARD_MS;
+  q.results = [];
+  q.words.forEach(function (word, i) {
+    const ok = !q.rv.wrong[i];
+    const chars = Array.from(word).length;
+    const bad = ok ? [] : chars <= 1 ? [0] : q.rv.bad[i].slice().sort(function (a, b) { return a - b; });
+    recordAnswer(s, word, ok, bad, q);
+    q.results.push({ word: word, ok: ok, bad: bad });
+  });
+  finishQuiz(s);
+}
+
+Object.assign(actions, {
+  rvToggle: function (el) {
+    const q = ui.quiz, i = rvIndex(q, el.dataset.i);
+    if (i < 0) return;
+    q.rv.wrong[i] = !q.rv.wrong[i];
+    if (!q.rv.wrong[i]) q.rv.bad[i] = [];
+    render();
+    announce(q.words[i] + (q.rv.wrong[i] ? '：標記為錯' : '：取消標記') + '。錯 ' + rvCount(q) + ' 個，共 ' + q.words.length + ' 個');
+  },
+  rvChar: function (el) {
+    const q = ui.quiz, i = rvIndex(q, el.dataset.i);
+    if (i < 0 || !q.rv.wrong[i]) return;
+    const j = Number(el.dataset.val);
+    if (!Number.isInteger(j) || j < 0 || j >= Array.from(q.words[i]).length) return;
+    const at = q.rv.bad[i].indexOf(j);
+    if (at === -1) q.rv.bad[i].push(j); else q.rv.bad[i].splice(at, 1);
+    render();
+  },
+  rvConfirm: commitReview
+});
+
+/* ----- 停止同鍵盤 ----- */
+/* 停止：新方式從不調用 finishQuiz／recordAnswer／saveDB，所以紀錄同統計同開始前完全一樣 */
+function quitNew(q) {
+  const inReview = q.phase === 'review';
+  let wasRunning = false;
+  if (q.mode === 'timed') wasRunning = timedPause('dialog'); else selfCancel();   // 確認框期間暫停計時同朗讀
+  confirmBox({
+    icon: '🛑', title: inReview ? '離開對答案？' : '停止默書？',
+    text: inReview ? '未確認對答案，離開就唔會記錄今次成績。' : '今次默書唔會記錄，成績同錯字怪獸唔受影響。',
+    okText: inReview ? '離開，唔記錄' : '停止', danger: true
+  }, function () {
+    if (ui.view !== 'quiz' || ui.quiz !== q || q.committed) return;
+    q.aborted = true;
+    toast('默書已取消，未記錄');
+    go('menu');   // go() 已 clearTimers() + stopSpeech()
+  }, function () {
+    if (ui.view !== 'quiz' || ui.quiz !== q) return;
+    if (wasRunning) timedResume();   // 取消：由原位繼續；本來已手動暫停就保持暫停
+  });
+}
+
+/* 默書鍵盤快捷鍵（新方式）。已經過所有現有守衛（修飾鍵、shortcutsOn、確認框、輸入框、長按重覆） */
+function newModeKey(e, q, onControl) {
+  ui.lastInputKbd = true;
+  if (q.phase === 'review') return;   // 對答案階段冇快捷鍵，避免誤批
+  if (q.mode === 'timed') {
+    if (e.key === ' ' && !onControl && q.t) {
+      e.preventDefault();
+      if (q.t.paused) timedResume(); else timedPause('user');
+    }
+    return;
+  }
+  if (q.phase !== 'run') return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); selfPrev(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); selfNext(); }
+  else if ((e.key === ' ' || e.key === 'Enter') && !onControl) {
+    e.preventDefault();
+    if (e.key === ' ') actions.selfRepeat(); else selfNext();
+  }
+}
+
+/* ----- 設定頁：默書方式卡 ----- */
+/* 定時設定說明；任何一級「秒數 ÷ 朗讀次數 < TIMED_MIN_SLOT_S」就追加警告（只警告，唔阻止） */
+function timedHintText(prefs) {
+  const tp = prefs.timed;
+  let msg = '讀 ' + tp.reads + ' 次會平均分佈喺停留時間內，每個詞語完整行晒設定秒數先轉下一個。';
+  const low = [];
+  let min = Infinity;
+  tp.secs.forEach(function (sec, i) {
+    const slot = sec / tp.reads;
+    if (slot < TIMED_MIN_SLOT_S) { low.push(TIER_LABELS[i]); min = Math.min(min, slot); }
+  });
+  if (low.length) msg += ' ⚠️ ' + low.join('、') + '詞語每次朗讀只得 ' + min.toFixed(1) + ' 秒，可能讀唔完，建議加秒數或減少次數。';
+  return msg;
+}
+
+function modeCardHtml(c) {
+  const p = me().prefs;
+  const noSpeech = !('speechSynthesis' in window);
+  const opt = function (mode, title, desc, disabled) {
+    const on = c.mode === mode || (mode === 'normal' && c.mode !== 'timed' && c.mode !== 'self');
+    return '<button class="mode-opt' + (on ? ' on' : '') + '" data-action="setOpt" data-key="mode" data-val="' + mode + '"' + pressed(on) + (disabled ? ' disabled' : '') + '>' +
+      '<b>' + title + '</b><small>' + desc + '</small></button>';
+  };
+  let timedBlock = '';
+  if (c.mode === 'timed') {
+    const rows = TIER_LABELS.map(function (label, i) {
+      return '<div class="tier-row"><span class="tier-label">' + label + '</span>' +
+        '<button class="step" data-action="tierStep" data-i="' + i + '" data-val="-1" aria-label="' + label + '，減一秒">−</button>' +
+        '<span class="tier-val"><output id="tierSecs' + i + '">' + p.timed.secs[i] + '</output> 秒</span>' +
+        '<button class="step" data-action="tierStep" data-i="' + i + '" data-val="1" aria-label="' + label + '，加一秒">＋</button></div>';
+    }).join('');
+    const reads = [1, 2, 3].map(function (n) {
+      return '<button class="chip' + (p.timed.reads === n ? ' on' : '') + '" data-action="setTimedReads" data-val="' + n + '"' + pressed(p.timed.reads === n) + '>' + n + ' 次</button>';
+    }).join('');
+    timedBlock = '<div class="timed-set"><span class="field-label">每個詞語停留幾多秒？</span>' + rows +
+      '<span class="field-label">每個詞語讀幾多次？</span>' +
+      '<div class="toggle-select" data-group="timedReads">' + reads + '</div>' +
+      '<button class="link" data-action="timedDefaults">還原預設秒數</button>' +
+      '<p class="muted" id="timedHint" role="status">' + esc(timedHintText(p)) + '</p></div>';
+  }
+  return '<div class="card" style="margin-top:16px"><h2>默書方式</h2>' +
+    '<div class="mode-list" role="group" aria-label="默書方式">' +
+    opt('normal', QUIZ_MODES.normal.label, '逐題聽，自己睇答案，即時剔啱或錯', false) +
+    opt('timed', QUIZ_MODES.timed.label, noSpeech ? '呢個瀏覽器唔支援朗讀，用唔到定時默書' : '全自動逐個詞語朗讀，每個限時；完成後對答案', noSpeech) +
+    opt('self', QUIZ_MODES.self.label, '學生自己按上一個／下一個，不計時；完成後對答案', false) +
+    '</div>' + timedBlock + '</div>';
+}
+
+/* 即時儲存、只更新對應 DOM（唔重畫整頁，焦點唔會丟） */
+function refreshTimedUi() {
+  const p = me().prefs;
+  p.timed.secs.forEach(function (v, i) {
+    const o = document.getElementById('tierSecs' + i);
+    if (o) o.textContent = v;
+  });
+  Array.prototype.forEach.call(document.querySelectorAll('[data-action=setTimedReads]'), function (b) {
+    const on = Number(b.dataset.val) === p.timed.reads;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  const h = document.getElementById('timedHint');
+  if (h) h.textContent = timedHintText(p);
+}
+
+Object.assign(actions, {
+  tierStep: function (el) {
+    const i = Number(el.dataset.i), v = Number(el.dataset.val);
+    if (!Number.isInteger(i) || i < 0 || i > 3 || (v !== 1 && v !== -1)) return;
+    const t = me().prefs.timed;
+    t.secs[i] = Math.min(TIMED_SECS_MAX, Math.max(TIMED_SECS_MIN, t.secs[i] + v));
+    saveDB();
+    refreshTimedUi();
+  },
+  setTimedReads: function (el) {
+    const n = Number(el.dataset.val);
+    if (!Number.isInteger(n) || n < 1 || n > TIMED_READS_MAX) return;
+    me().prefs.timed.reads = n;
+    saveDB();
+    refreshTimedUi();
+  },
+  timedDefaults: function () {
+    me().prefs.timed.secs = TIMED_SECS_DEFAULT.slice();
+    saveDB();
+    refreshTimedUi();
+  }
+});
+
 
 /* ---------- 成績同紀錄 ---------- */
 Object.assign(actions, {
@@ -3114,6 +3713,8 @@ Object.assign(actions, {
 document.addEventListener('click', function (e) {
   const el = e.target.closest('[data-action]');
   if (!el) return;
+  ui.lastInputKbd = e.detail === 0;   // 鍵盤（或虛擬）啟動嘅 click，detail 係 0
+  if (performance.now() < ui.clickGuardUntil) return;   // 剛進入對答案／結果頁：忽略連點
   const fn = actions[el.dataset.action];
   // 滑鼠／觸控撳「停止默書」✕：喺開確認框之前放走焦點，令框記低嘅 opener 係 BODY，
   // 取消後唔會還原到 ✕（否則之後撳空白／Enter 會被 ✕ 攔截再開框）；鍵盤啟動（detail === 0）照舊還原
@@ -3122,6 +3723,11 @@ document.addEventListener('click', function (e) {
   // 滑鼠／觸控（detail > 0）撳完朗讀類掣就放走焦點，等 Enter／空白繼續行默書快捷鍵；
   // 鍵盤啟動嘅 click（detail === 0）唔處理，保持鍵盤同讀屏用家嘅焦點位置
   if (e.detail > 0 && (el.dataset.action === 'speak' || el.dataset.action === 'slow' || el.dataset.action === 'hint' || el.dataset.action === 'setWordLang')) el.blur();
+  // 新默書方式：selfPrev／selfNext 會 render()，被撳嗰粒掣已經脫離 DOM，要放走重畫後還原咗焦點嘅新掣，空白／方向鍵快捷鍵先繼續生效
+  if (e.detail > 0 && NEW_BLUR.indexOf(el.dataset.action) !== -1) {
+    const a = document.activeElement;
+    if (a && a !== document.body && $app.contains(a) && a.dataset && a.dataset.action === el.dataset.action) a.blur();
+  }
 });
 
 document.addEventListener('input', function (e) {
@@ -3166,6 +3772,7 @@ document.addEventListener('keydown', function (e) {
     if (e.key === ' ' && !onControl) e.preventDefault();
     return;
   }
+  if (q.mode === 'timed' || q.mode === 'self') { newModeKey(e, q, onControl); return; }   // 新默書方式自己處理
   if (e.key === ' ' || e.key === 'Enter') {
     if (onControl) return;
     e.preventDefault();   // 空白鍵預設會捲動頁面
@@ -3264,7 +3871,7 @@ window.addEventListener('hashchange', function () {
 });
 /* 離開 app／切換分頁：家長 PIN 即時重新上鎖（手機交畀小朋友嘅常見情況） */
 document.addEventListener('visibilitychange', function () {
-  if (document.visibilityState === 'hidden') lockPin();
+  if (document.visibilityState === 'hidden') { lockPin(); timedPause('hidden'); }   // 定時默書：切走即暫停，返嚟要撳繼續
 });
 if (loadNotice) toast(loadNotice, 6000);   // 載入時有資料讀唔到，提示用家
 
