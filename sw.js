@@ -7,7 +7,7 @@
    - 字體：install 時由 freehkkai.css 讀出全部 woff2 一併預先快取（best-effort，個別失敗唔影響安裝）；
      之後 cache-first，未快取到嘅字體片首次載入成功時補入快取 */
 
-const CACHE_VERSION = 12;
+const CACHE_VERSION = 13;
 const CACHE_PREFIX = 'chi-vocab-';
 const CACHE = CACHE_PREFIX + 'v' + CACHE_VERSION;
 

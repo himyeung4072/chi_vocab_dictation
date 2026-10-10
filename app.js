@@ -1981,7 +1981,7 @@ function refreshCount() {
 
   document.getElementById('countHint').textContent = c.source === 'bank'
     ? (!total ? '' : n < total ? '先默最耐冇默對嘅 ' + n + ' 個，尚餘 ' + (total - n) + ' 個錯字未溫' : '默晒全部 ' + total + ' 個錯字')
-    : (!total ? '先揀課文' : n < total ? '由 ' + total + ' 個詞語入面隨機抽 ' + n + ' 個' : '默晒全部 ' + total + ' 個詞語');
+    : (!total ? '先揀課文' : n < total ? (me().prefs.order === 'random' ? '由 ' + total + ' 個詞語入面隨機抽 ' + n + ' 個' : '按課文次序，默頭 ' + n + ' 個（共 ' + total + ' 個）') : '默晒全部 ' + total + ' 個詞語');
 }
 
 /* 詞語 → 提示句對照（無原型字典）：逐課逐詞，第一課有嘅優先 */
@@ -1996,11 +1996,15 @@ function hintMap(lessons) {
   return out;
 }
 
-/* 由全部詞語入面隨機抽 n 個；順序模式會跟返課文次序，亂序模式會打亂 */
+/* 順序模式：揀頭 n 個，跟返課文次序；亂序模式：由全部詞語入面隨機抽 n 個再打亂 */
 function pickWords(all, n, order) {
   let idx = all.map(function (w, i) { return i; });
-  if (n < all.length) idx = shuffle(idx).slice(0, n);
-  idx = order === 'random' ? shuffle(idx) : idx.sort(function (a, b) { return a - b; });
+  if (order === 'random') {
+    if (n < all.length) idx = shuffle(idx).slice(0, n);
+    idx = shuffle(idx);
+  } else {
+    idx = idx.slice(0, n);   // 順序：頭 n 個，本身已經係課文次序
+  }
   return idx.map(function (i) { return all[i]; });
 }
 
@@ -2822,7 +2826,7 @@ Object.assign(actions, {
       if (n < total) label += '（先默 ' + n + ' 個）';
     } else {
       words = pickWords(words, n, p.order);
-      if (n < total) label += '（抽 ' + n + ' 個）';
+      if (n < total) label += p.order === 'random' ? '（抽 ' + n + ' 個）' : '（頭 ' + n + ' 個）';
     }
     if (c.source === 'lessons') {   // 成功開始先記住今次揀嘅課文
       p.lastLessonIds = c.lessonIds.filter(function (id) { return s.lessons.some(function (l) { return l.id === id; }); });
