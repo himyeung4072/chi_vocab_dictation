@@ -1414,8 +1414,9 @@ function menuView(s) {
     '<button class="menu-btn" data-action="goSetup" data-source="lessons"><span class="ico">✏️</span>開始默書</button>' +
     '<button class="menu-btn r" data-action="goSetup" data-source="bank"><span class="ico">👾</span>錯字怪獸' +
     (bankCount ? '<span class="badge">' + bankCount + '</span>' : '') + '</button>' +
-    '<button class="menu-btn g" data-action="goLessons"><span class="ico">📚</span>我的詞庫</button>' +
-    '<button class="menu-btn b" data-action="goStats"><span class="ico">📊</span>我的成績</button>' +
+    '<button class="menu-btn sm g" data-action="goLessons"><span class="ico">📚</span>我的詞庫</button>' +
+    '<button class="menu-btn sm b" data-action="goStats"><span class="ico">📊</span>我的成績</button>' +
+    '<button class="menu-btn sm p" data-action="printBank" aria-label="列印錯字練習紙"' + (bankCount ? '' : ' disabled') + '><span class="ico">🖨️</span>列印錯字練習紙</button>' +
     '</div>' + homeNoticesHtml() +
     '<div class="footer-links"><button class="link danger" data-action="deleteStudent">刪除呢位同學</button></div>';
 }
@@ -1434,14 +1435,34 @@ function printOpts() {
   };
 }
 
-/* 列印快照：{ title, words, hints(無原型字典), hasHints, studentName, source }；搵唔到課文或者冇詞語就 null */
+/* 一次默書紀錄入面寫錯嘅詞語（按原本次序、去重）；舊版紀錄冇 results 就用 wrong */
+function historyWrongWords(h) {
+  const list = h.results
+    ? h.results.filter(function (r) { return !r.ok; }).map(function (r) { return r.word; })
+    : (h.wrong || []);
+  const seen = new Set();
+  return list.filter(function (w) {
+    if (seen.has(w)) return false;
+    seen.add(w);
+    return true;
+  });
+}
+
+/* 列印快照：{ title, words, hints(無原型字典), hasHints, studentName, source, dateText }；搵唔到課文或者冇詞語就 null */
 function printModel(s, src, id) {
   if (!s) return null;
-  let title, words, hints;
+  let title, words, hints, dateText = '';
   if (src === 'bank') {
     title = '錯字';
     words = bankQueue(s);
     hints = hintMap(s.lessons);
+  } else if (src === 'history') {
+    const h = s.history.find(function (x) { return x.id === id; });
+    if (!h) return null;
+    title = h.label;
+    words = historyWrongWords(h);
+    hints = hintMap(s.lessons);
+    dateText = dayLabel(h.date) + ' ' + timeLabel(h.date);
   } else {
     const l = s.lessons.find(function (x) { return x.id === id; });
     if (!l) return null;
@@ -1459,7 +1480,8 @@ function printModel(s, src, id) {
     hints: hints,
     hasHints: words.some(function (w) { return !!hints[w]; }),
     studentName: s.name || '',
-    source: src === 'bank' ? 'bank' : 'lesson'
+    source: src === 'bank' ? 'bank' : src === 'history' ? 'history' : 'lesson',
+    dateText: dateText
   };
 }
 
@@ -1525,7 +1547,7 @@ function ppGroup(key, label, items) {
 }
 
 function printDialogBodyHtml(m) {
-  return '<p class="pp-title"><b>' + esc(m.source === 'bank' ? '錯字怪獸清單' : m.title) + '</b>　<span>共 ' + Number(m.words.length) + ' 個詞語</span></p>' +
+  return '<p class="pp-title"><b>' + esc(m.source === 'bank' ? '錯字怪獸清單' : m.title) + '</b>　<span>' + (m.source === 'history' && m.dateText ? esc(m.dateText) + ' · ' : '') + '共 ' + Number(m.words.length) + ' 個詞語</span></p>' +
     '<div class="pp-opts">' +
     ppGroup('mode', '紙張', [['practice', '✏️ 練習紙'], ['dictation', '📝 默書紙']]) +
     ppGroup('cells', '每字幾格', PRINT_CELLS.map(function (n) { return [String(n), n + ' 格']; })) +
@@ -1841,18 +1863,34 @@ function setupView(s) {
     return '<button class="chip' + (c[key] === val ? ' on' : '') + '" data-action="setOpt" data-key="' + key + '" data-val="' + val + '"' + pressed(c[key] === val) + '>' + label + '</button>';
   };
   const bankWords = bankQueue(s);   // 最耐冇默對嘅排最前，即係會先默嘅字
+  const delMode = c.source === 'bank' && !!c.delMode && bankWords.length > 0;   // 垃圾桶選擇刪除模式
+  const sel = delMode ? c.delSel.filter(function (w) { return hasKey(s.bank, w); }) : [];
 
   let sourceBlock;
   if (c.source === 'bank') {
     if (!bankWords.length) {
       sourceBlock = '<div class="empty"><span class="em">🎉</span>錯字怪獸全部打敗晒！<br>暫時冇錯字。</div>';
+    } else if (delMode) {
+      const allOn = sel.length === bankWords.length;
+      sourceBlock = '<p class="muted">撳詞語選擇要刪除嘅錯字。</p><div class="chips" style="margin-top:10px">' +
+        bankWords.map(function (w) {
+          const b = s.bank[w];
+          const on = sel.indexOf(w) !== -1;
+          return '<button class="chip word sel' + (on ? ' on' : '') + '" data-action="toggleBankSel" data-word="' + esc(w) + '"' + pressed(on) + '>' +
+            esc(w) + ' <small class="muted">×' + Number(b.need - b.progress) + '</small></button>';
+        }).join('') + '</div>' +
+        '<div class="bank-del-bar"><p class="muted" role="status" aria-live="polite">已選 ' + sel.length + ' / ' + bankWords.length + ' 個</p>' +
+        '<button class="btn ghost small" data-action="bankSelAll">' + (allOn ? '取消全選' : '全選') + '</button>' +
+        '<button class="btn ghost small" data-action="bankDelCancel">取消</button>' +
+        '<button class="btn red small" data-action="deleteBankSelected"' + (sel.length ? '' : ' disabled') + '>刪除</button></div>';
     } else {
       sourceBlock = '<p class="muted">默對就打敗怪獸。有啲字要默對幾次先剔走。</p><div class="chips" style="margin-top:10px">' +
         bankWords.map(function (w) {
           const b = s.bank[w];
-          return '<span class="chip word">' + esc(w) + ' <small class="muted">×' + Number(b.need - b.progress) + '</small>' +
-            '<button class="chip-x" data-action="removeBank" data-word="' + esc(w) + '" aria-label="刪除「' + esc(w) + '」">✕</button></span>';
-        }).join('') + '</div>' + countBoxHtml('默幾多個錯字？');
+          return '<span class="chip word">' + esc(w) + ' <small class="muted">×' + Number(b.need - b.progress) + '</small></span>';
+        }).join('') + '</div>' +
+        '<div class="bank-tools"><button class="icon-btn" data-action="bankDelStart" aria-label="選擇要刪除嘅錯字">🗑</button></div>' +
+        countBoxHtml('默幾多個錯字？');
     }
   } else if (!s.lessons.length) {
     sourceBlock = '<div class="empty"><span class="em">📝</span>仲未有課文，<br>請先去「我的詞庫」新增。</div>';
@@ -1866,7 +1904,7 @@ function setupView(s) {
       countBoxHtml('默幾多個詞語？');
   }
 
-  const canStart = c.source === 'bank' ? bankWords.length > 0 : s.lessons.length > 0;
+  const canStart = c.source === 'bank' ? bankWords.length > 0 && !delMode : s.lessons.length > 0;
   const group = function (key, inner) {
     return '<div class="toggle-select" data-group="' + key + '">' + inner + '</div>';
   };
@@ -1877,9 +1915,6 @@ function setupView(s) {
     group('source', chip('source', 'lessons', '📚 課文') + chip('source', 'bank', '👾 錯字怪獸')) +
     '<div style="margin-top:14px">' + sourceBlock + '</div></div>' +
     modeCardHtml(c) +
-    (c.source === 'bank'
-      ? '<button class="btn ghost small block" style="margin-top:12px" data-action="printBank"' + (bankWords.length ? '' : ' disabled') + ' aria-label="列印錯字練習紙">🖨️ 列印錯字練習紙</button>'
-      : '') +
     '<button class="btn block" style="margin-top:20px;min-height:68px;font-size:1.3rem"' + (canStart ? '' : ' disabled') + ' data-action="startQuiz">開始默書 🚀</button>';
 }
 
@@ -1957,7 +1992,8 @@ function initSetup(s, source) {
   if (!ids.length && s.lessons.length) ids = [s.lessons[s.lessons.length - 1].id];
   ui.setup = {
     source: source, lessonIds: ids, count: countDefault(source),   // count：數字 = 默幾多個；null = 全部
-    mode: defaultMode()   // 默書方式：timed／self；每次入設定頁都重設為預設方式（自助）
+    mode: defaultMode(),   // 默書方式：timed／self；每次入設定頁都重設為預設方式（自助）
+    delMode: false, delSel: []   // 錯字怪獸「垃圾桶」選擇刪除模式；只存記憶體，每次入設定頁重設
   };
 }
 
@@ -2218,11 +2254,14 @@ function modeTagHtml(mode) {
 function recRow(h) {
   const p = pct(h.correct, h.total);
   const cls = h.incomplete ? ' inc' : p >= 80 ? '' : p >= 50 ? ' mid' : ' low';
+  const wrongN = historyWrongWords(h).length;
   return '<div class="rec"><button class="rec-main" data-action="openRecord" data-id="' + esc(h.id) + '">' +
     '<span class="rec-time">' + shortDate(h.date) + ' ' + timeLabel(h.date) + '</span>' +
     '<span class="rec-label">' + esc(h.label) + '</span>' + modeTagHtml(h.mode) +
     (h.incomplete ? '<span class="rec-tag">未完成</span>' : '') +
     '<span class="rec-score' + cls + '">' + h.correct + '/' + h.total + '</span></button>' +
+    '<button class="icon-btn" data-action="printHistory" data-id="' + esc(h.id) + '" aria-label="' +
+    (wrongN ? '列印「' + esc(h.label) + '」嘅錯字練習紙' : '冇錯字可以列印') + '"' + (wrongN ? '' : ' disabled') + '>🖨️</button>' +
     '<button class="icon-btn" data-action="deleteRecord" data-id="' + esc(h.id) + '" aria-label="刪除呢次紀錄">🗑</button></div>';
 }
 
@@ -2585,6 +2624,7 @@ Object.assign(actions, {
 Object.assign(actions, {
   printLesson: function (el) { openPrintDialog('lesson', el.dataset.id); },
   printBank: function () { openPrintDialog('bank'); },
+  printHistory: function (el) { openPrintDialog('history', el.dataset.id); },
   printOpt: function (el) {
     if (!ui.print) return;
     const key = el.dataset.key;
@@ -2615,22 +2655,43 @@ Object.assign(actions, {
     // 轉「默邊度」：數量重設為新模式嘅預設（課文 12、錯字怪獸 10）
     if (key === 'source' && ui.setup.source !== el.dataset.val) ui.setup.count = countDefault(el.dataset.val);
     ui.setup[key] = el.dataset.val;
+    if (key === 'source') { ui.setup.delMode = false; ui.setup.delSel = []; }
     render();  // 內容唔同，要重畫
   },
-  removeBank: function (el) {
-    const s = me();
+  bankDelStart: function () { ui.setup.delMode = true; ui.setup.delSel = []; render(); },
+  bankDelCancel: function () { ui.setup.delMode = false; ui.setup.delSel = []; render(); },
+  toggleBankSel: function (el) {
     const w = el.dataset.word;
-    if (!s.bank[w]) return;
+    if (!hasKey(me().bank, w)) return;
+    const i = ui.setup.delSel.indexOf(w);
+    if (i === -1) ui.setup.delSel.push(w); else ui.setup.delSel.splice(i, 1);
+    render();
+  },
+  bankSelAll: function () {
+    const all = Object.keys(me().bank);
+    const cur = ui.setup.delSel.filter(function (w) { return hasKey(me().bank, w); });
+    ui.setup.delSel = cur.length === all.length ? [] : all;   // 已全選就取消全選
+    render();
+  },
+  deleteBankSelected: function () {
+    const s = me();
+    const words = ui.setup.delSel.filter(function (w) { return hasKey(s.bank, w); });
+    if (!words.length) return;
     confirmBox({
-      icon: '👾', title: '刪除「' + w + '」？',
+      icon: '👾', title: '刪除 ' + words.length + ' 個詞語？',
       text: '會由錯字怪獸移走，之後唔會再喺怪獸默書出現。成績紀錄會保留。',
       okText: '刪除', danger: true
     }, function () {
-      delete s.bank[w];
-      const ws = s.wordStats[w];
-      if (ws && ws.bankEntries) ws.bankEntries = Math.max(0, ws.bankEntries - 1);
+      const gone = words.filter(function (w) { return hasKey(s.bank, w); });
+      gone.forEach(function (w) {
+        delete s.bank[w];
+        const ws = s.wordStats[w];
+        if (ws && ws.bankEntries) ws.bankEntries = Math.max(0, ws.bankEntries - 1);
+      });
+      ui.setup.delMode = false;
+      ui.setup.delSel = [];
       saveDB();
-      toast('已刪除');
+      toast('已刪除 ' + gone.length + ' 個');
       render();
     });
   },
@@ -3363,7 +3424,7 @@ Object.assign(actions, {
   ['deleteStudent', '刪除同學'],
   ['newLesson', '修改詞庫', true], ['editLesson', '修改詞庫', true], ['deleteLesson', '修改詞庫'],
   ['saveLesson', '儲存課文', true],   // 第三項 true = 課文編輯階段：過咗 PIN 保持解鎖，離開編輯頁（go()）先鎖
-  ['removeBank', '刪除錯字'],
+  ['deleteBankSelected', '刪除錯字'],
   ['deleteRecord', '刪除紀錄'], ['deleteDay', '刪除紀錄']
 ].forEach(function (p) { actions[p[0]] = guarded(p[1], actions[p[0]], p[2]); });
 

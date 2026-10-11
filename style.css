@@ -12,6 +12,8 @@
   --red-d: #9C2235;
   --blue: #2878B5;
   --blue-d: #174F80;
+  --purple: #7A4BB0;
+  --purple-d: #533278;
   --yellow: #FFD166;
   --line: #F0E2C8;
   --radius: 26px;
@@ -209,7 +211,7 @@ button { font: inherit; color: inherit; cursor: pointer; border: 0; background: 
 .chip.avatar.on::before { content: none; }
 .chip.pop { animation: chipPop .38s cubic-bezier(.3, 1.6, .5, 1); }
 .chip.word { cursor: default; font-family: var(--font-kai); font-size: 1.2rem; font-weight: 400; background: #FFF0F0; border-color: #F8C4C8; overflow: visible; }
-.chip.word small, .chip.word .chip-x { font-family: var(--font-ui); font-weight: 700; }
+.chip.word small { font-family: var(--font-ui); font-weight: 700; }
 .chip.word:active { transform: none; }
 
 .field-label { font-weight: 700; margin: 18px 0 8px; display: block; }
@@ -264,8 +266,10 @@ input:focus, textarea:focus {
 .greet .big-av { font-size: 5rem; display: inline-block; animation: bob 2.4s ease-in-out infinite; }
 .greet h2 { margin-top: 2px; }
 
-.menu-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 18px; }
+/* 六欄等寬：上排每粒跨 3 欄、下排每粒跨 2 欄，兩排總闊度同為 6c + 5gap，左右邊緣必然對齊 */
+.menu-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 14px; margin-top: 18px; }
 .menu-btn {
+  grid-column: span 3;
   --c: var(--orange);
   --cd: var(--orange-d);
   display: flex;
@@ -289,6 +293,10 @@ input:focus, textarea:focus {
 .menu-btn.g { --c: var(--green); --cd: var(--green-d); }
 .menu-btn.r { --c: var(--red); --cd: var(--red-d); }
 .menu-btn.b { --c: var(--blue); --cd: var(--blue-d); }
+.menu-btn.p { --c: var(--purple); --cd: var(--purple-d); }
+.menu-btn.sm { grid-column: span 2; min-height: 112px; padding: 8px 4px; font-size: .8rem; line-height: 1.25; text-align: center; text-wrap: balance; }
+.menu-btn.sm .ico { font-size: 2rem; }
+.menu-btn[disabled] { opacity: .45; pointer-events: none; }
 .badge {
   position: absolute;
   top: 10px;
@@ -522,6 +530,14 @@ input:focus, textarea:focus {
   color: var(--text);
 }
 .t .rec-tag { margin-top: 6px; }
+/* 窄屏：每條紀錄有 🖨️＋🗑 兩粒掣，橫排會壓扁標題；改為標題獨佔下一行（日期、模式、分數喺上一行） */
+@media (max-width: 480px) {
+  .rec { gap: 4px; }
+  .rec > .icon-btn { width: 40px; height: 40px; font-size: 1rem; }
+  .rec-main { flex-wrap: wrap; gap: 4px 6px; padding: 4px 6px; }
+  .rec-label { order: 5; flex: 1 1 100%; }
+  .rec-score { margin-left: auto; padding: 2px 8px; }
+}
 
 .word-row { display: flex; align-items: center; gap: 12px; padding: 8px 4px; border-top: 2px dashed var(--line); }
 .word-row:first-of-type { border-top: 0; }
@@ -654,7 +670,7 @@ details.forgot-pin p { margin: 4px 0 0; }
 .view.enter .grid > :nth-child(2), .view.enter .menu-grid > :nth-child(2) { animation-delay: .06s; }
 .view.enter .grid > :nth-child(3), .view.enter .menu-grid > :nth-child(3) { animation-delay: .12s; }
 .view.enter .grid > :nth-child(4), .view.enter .menu-grid > :nth-child(4) { animation-delay: .18s; }
-.view.enter .grid > :nth-child(5) { animation-delay: .24s; }
+.view.enter .grid > :nth-child(5), .view.enter .menu-grid > :nth-child(5) { animation-delay: .24s; }
 .view.enter .grid > :nth-child(6) { animation-delay: .3s; }
 
 @media (min-width: 600px) {
@@ -728,22 +744,14 @@ details.forgot-pin p { margin: 4px 0 0; }
 .btn-settings { padding: 4px 18px; }
 .btn-settings:active { transform: scale(.95); background: #FFF0D9; }
 
-/* 錯字怪獸：刪除單條 */
-.chip-x {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 36px;
-  height: 36px;
-  margin: 0 -10px 0 6px;
-  border-radius: 50%;
-  font-size: .9rem;
-  color: var(--red-d);
-  background: #fff;
-  border: 2px solid #F8C4C8;
-  transition: transform .12s cubic-bezier(.3, 1.6, .5, 1);
-}
-.chip-x:active { transform: scale(.88); }
+/* 錯字怪獸：垃圾桶多選刪除 */
+.bank-tools { display: flex; justify-content: flex-end; margin-top: 8px; }
+.bank-del-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 12px; }
+.bank-del-bar p { flex: 1 1 100%; margin: 0; }
+.bank-del-bar .btn { flex: 1 1 auto; }
+.chip.word.sel { cursor: pointer; overflow: hidden; }
+.chip.word.sel.on { background: #FFE1E3; border-color: var(--red); color: var(--red-d); box-shadow: 0 3px 0 var(--red-d); }
+.chip.word.sel.on small { color: var(--red-d); }
 
 /* 設定頁：我嘅資料 */
 .name-edit { display: flex; gap: 10px; align-items: center; }
