@@ -17,16 +17,10 @@ const SPEEDS = {
   fast: { label: '🐆 快', rate: 1.05 }
 };
 const LANGS = { yue: { label: '廣東話' }, cmn: { label: '普通話' } };
-const CHEERS = ['好嘢！', '叻呀！', '正呀！', '好勁！', '繼續加油！'];
-const COMFORTS = ['唔緊要，下次記得！', '錯咗先會記得牢啲！', '加油，再嚟！'];
 
 // 時序（毫秒）
 const FIRST_DELAY = 1500;  // 開始默書後，第一個詞語朗讀前嘅等待
-const NEXT_DELAY = 1000;   // 下一題出現後，朗讀前嘅等待
-const FEEDBACK_MS = 1200;  // 答啱／錯動畫顯示時間，播完先轉下一題
 const SLOW_RATE = 0.45;    // 「再讀慢啲」嘅速度
-const LOCK_MAX_MS = 6000;  // 「睇答案」最長鎖定時間（朗讀收唔到完結訊號時嘅保險）
-const LOCK_HINT = '聽唔到？撳 🔊 再試';   // 鎖定期間顯示嘅提示
 // 設定頁「🔊 試聽」讀嘅句子；普通話用書面語，唔用廣東話口語
 const VOICE_TEST = { yue: '你好，我哋開始默書啦', cmn: '你好，我們開始默書了' };
 const HINT_MAX = 60;       // 提示句最多幾多個字（按字元計，超出截短）
@@ -38,7 +32,10 @@ const SHARE_TEXT_MAX = 5000;     // 分享課文：文字最多幾多個字（�
 const SHARE_PAYLOAD_MAX = 20000; // 分享連結 #lesson= 後面最多幾多字元（中文 UTF-8 每字 3 byte，base64 約 4 字元）
 const SHARE_LESSONS_MAX = 100;   // 一位同學最多幾多課（只喺加入分享課文時檢查）
 const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
-const QUIZ_MODES = { normal: { label: '逐題自評', tag: '' }, timed: { label: '定時默書', tag: '定時' }, self: { label: '自助默書', tag: '自助' } };
+const QUIZ_MODES = { timed: { label: '定時默書', tag: '定時' }, self: { label: '自助默書', tag: '自助' } };
+/* 預設默書方式：有語音就定時，冇就自助。舊紀錄嘅 'normal'（已移除嘅舊方式）只留喺 history[].mode，唔再係可選方式 */
+function defaultMode() { return 'speechSynthesis' in window ? 'timed' : 'self'; }
+function normaliseMode(m) { return m === 'timed' || m === 'self' ? m : defaultMode(); }
 const TIER_LABELS = ['2 字或以下', '3 字', '4 字', '5 字或以上'];
 const TIMED_SECS_DEFAULT = [8, 10, 12, 15];
 const TIMED_SECS_MIN = 3, TIMED_SECS_MAX = 60;
@@ -413,7 +410,7 @@ function cleanHistory(list) {
     h.correct = Math.min(numOr(h.correct, 0), h.total);
     h.label = typeof h.label === 'string' ? h.label : String(h.label == null ? '' : h.label);
     h.lang = h.lang === 'cmn' ? 'cmn' : 'yue';
-    h.mode = h.mode === 'timed' || h.mode === 'self' ? h.mode : 'normal';   // 只接受白名單；舊紀錄、惡意值一律當原有模式
+    h.mode = h.mode === 'timed' || h.mode === 'self' ? h.mode : 'normal';   // 只接受白名單；'normal' = 已移除嘅舊方式，只作舊紀錄標記（唔顯示標籤），舊紀錄、惡意值一律當 'normal'
     h.incomplete = h.incomplete === true;
     h.planned = h.incomplete ? Math.max(h.total, numOr(h.planned, h.total)) : h.total;
     h.wrong = Array.isArray(h.wrong) ? cleanWords(h.wrong) : [];
@@ -717,17 +714,13 @@ function newStudent(name, grade, avatar) {
 }
 
 /* ---------- 畫面切換 ---------- */
-const timers = { speak: null, adv: null, lock: null, run: null };
+const timers = { speak: null, run: null };
 
 function clearTimers() {
   clearTimeout(timers.run);
   timers.run = null;
   clearTimeout(timers.speak);
-  clearTimeout(timers.adv);
-  clearTimeout(timers.lock);
   timers.speak = null;
-  timers.adv = null;
-  timers.lock = null;
 }
 
 function stopSpeech() {
@@ -970,7 +963,7 @@ function confetti(count) {
 
 /* 撳落按鈕時嘅水波紋 */
 document.addEventListener('pointerdown', function (e) {
-  const t = e.target.closest('.btn, .menu-btn, .chip:not(.word), .student-card, .speaker, .lang-btn, .tile, .rec-main, .icon-btn');
+  const t = e.target.closest('.btn, .menu-btn, .chip:not(.word), .student-card, .speaker, .lang-btn, .rec-main, .icon-btn');
   if (!t || t.disabled) return;
   const r = t.getBoundingClientRect();
   const d = Math.max(r.width, r.height);
@@ -1091,7 +1084,8 @@ function confirmBox(opts, onOk, onCancel) {
    無論喺課文模式或者錯字怪獸模式，只要默對，庫內詞語就減一次。
    已經喺庫內又默錯 → 顯示嘅「×N」（need - progress）加 1，已默對嘅次數歸零。
    lastOkAt：入庫時設為而家；喺庫內默對（未剔走）更新為而家；喺庫內默錯唔變。
-   bad: 寫錯咗嘅字位置（0 開始），有揀先會計單字統計。 */
+   bad: 寫錯咗嘅字位置（0 開始）。新對答案恆有完整 bad（錯詞 ⇒ bad 非空）；
+   舊紀錄 ok:false 而 bad 空 = 單字層面未知，略過。 */
 function recordAnswer(s, word, ok, bad, quiz) {
   const now = new Date().toISOString();
   const st = s.wordStats[word] || (s.wordStats[word] = { attempts: 0, wrong: 0, bankEntries: 0 });
@@ -1199,8 +1193,7 @@ let lastScreen = null;   // 上一次畫咗邊個「畫面」（默書按題目�
 /* 「畫面」身份：換咗先搬焦點；同一畫面內重畫（例如切換選項）唔搶焦點 */
 function screenKey() {
   const q = ui.quiz;
-  if (ui.view === 'quiz' && q && q.mode && q.mode !== 'normal') return 'quiz:' + q.mode + ':' + q.phase;   // 新方式：換詞語唔搶焦點
-  return ui.view === 'quiz' && q ? 'quiz:' + q.idx + ':' + q.phase : ui.view;
+  return ui.view === 'quiz' && q ? 'quiz:' + q.mode + ':' + q.phase : ui.view;   // 換詞語唔搶焦點
 }
 
 function focusEl(t) {
@@ -1237,19 +1230,10 @@ function findBySig(sig) {
 function announceScreen() {
   const q = ui.quiz;
   if (ui.view !== 'quiz' || !q) return;
-  if (q.mode && q.mode !== 'normal') {   // 定時 run 唔喺度公佈：timedBegin 逐個詞語自己公佈
-    if (q.phase === 'prep') announce('預備，稍後開始自動朗讀');
-    else if (q.phase === 'run' && q.mode === 'self') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 個');
-    else if (q.phase === 'review') announce('默書完成，請對答案：點選寫錯嘅詞語');
-    return;
-  }
-  if (q.phase === 'listen') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 題');
-  else if (q.phase === 'answer') {   // 焦點喺「答案係」，跟住讀出答案（有提示句一併讀）
-    const word = q.words[q.idx];
-    const hint = q.hints ? q.hints[word] || '' : '';
-    announce(word + (hint ? '。提示句：' + hint : ''));
-  }
-  else if (q.phase === 'feedback') announce(q.fb.ok ? '答啱咗' : '答錯咗');
+  // 定時 run 唔喺度公佈：timedBegin 逐個詞語自己公佈
+  if (q.phase === 'prep') announce('預備，稍後開始自動朗讀');
+  else if (q.phase === 'run' && q.mode === 'self') announce('第 ' + (q.idx + 1) + ' / ' + q.words.length + ' 個');
+  else if (q.phase === 'review') announce('默書完成，請對答案：點選寫錯嘅字');
 }
 
 function render() {
@@ -1267,7 +1251,7 @@ function render() {
   lastView = ui.view;
   $app.innerHTML = '<div class="view' + (animate ? ' enter' : '') + '">' +
     (views[ui.view] || homeView)(s) + '</div>';
-  if (ui.view === 'quiz') { afterQuizRender(); syncLockHint(); }
+  if (ui.view === 'quiz') afterQuizRender();
   if (ui.view === 'setup') refreshCount();
 
   // 焦點管理：換畫面 → 搬去新畫面標題；同一畫面重畫 → 還原到同一粒掣（搵唔到先去標題）。
@@ -1923,7 +1907,7 @@ function settingsView(s) {
     '<div class="card" style="margin-top:16px"><h2>設定</h2>' +
     '<span class="field-label">次序</span>' + group('order', chip('order', 'seq', '➡️ 順序') + chip('order', 'random', '🔀 亂序')) +
     '<span class="field-label">預設朗讀語言</span>' + group('lang', chip('lang', 'yue', LANGS.yue.label) + chip('lang', 'cmn', LANGS.cmn.label)) +
-    '<p class="muted" style="margin-top:6px">默書時，每個詞語都可以隨時轉語言再聽。</p>' +
+    '<p class="muted" style="margin-top:6px">自助默書時，每個詞語都可以隨時轉語言再聽。</p>' +
     '<span class="field-label">朗讀速度</span>' +
     group('speed', Object.keys(SPEEDS).map(function (k) { return chip('speed', k, SPEEDS[k].label); }).join('')) +
     '<span class="field-label">提示句速度</span>' +
@@ -1932,10 +1916,11 @@ function settingsView(s) {
     '<span class="field-label" id="shortcutsLabel">鍵盤快捷鍵</span>' +
     '<div class="toggle-select" data-group="shortcuts" role="group" aria-labelledby="shortcutsLabel">' +
     shortcutChip(true, '開') + shortcutChip(false, '關') + '</div>' +
-    '<p class="muted" style="margin-top:6px">默書時用空白、Enter、1、2 操作；自助默書另可用 ←、→，定時默書用空白暫停／繼續。語音輸入或讀屏軟件用家可以關閉，避免誤觸。</p>' +
+    '<p class="muted" style="margin-top:6px">自助默書用 ←、→ 轉詞語，空白重讀，Enter 去下一個；定時默書用空白暫停／繼續。語音輸入或讀屏軟件用家可以關閉，避免誤觸。</p>' +
     '<div id="voicePicker">' + voicePickerHtml(s) + '</div>' +
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
     '<div id="voiceNotice">' + voiceNoticeHtml(voiceLangKey(s)) + '</div></div>' +
+    timedSettingsHtml(p) +
     parentCardHtml() +
     backupCardHtml() +
     // 字體署名（CC BY 4.0）：靜態文字，唔涉及資料
@@ -1972,7 +1957,7 @@ function initSetup(s, source) {
   if (!ids.length && s.lessons.length) ids = [s.lessons[s.lessons.length - 1].id];
   ui.setup = {
     source: source, lessonIds: ids, count: countDefault(source),   // count：數字 = 默幾多個；null = 全部
-    mode: 'normal'   // 默書方式：normal／timed／self；每次入設定頁都重設為逐題自評
+    mode: defaultMode()   // 默書方式：timed／self；每次入設定頁都重設為預設方式（有語音＝定時，冇＝自助）
   };
 }
 
@@ -2062,7 +2047,7 @@ function preloadAnswerFont(words) {
 function langSwitch(q, action) {
   return '<div class="lang-switch" role="group" aria-label="朗讀語言">' +
     ['cmn', 'yue'].map(function (k) {
-      return '<button class="lang-btn' + (q.curLang === k ? ' on' : '') + '" data-action="' + (action || 'setWordLang') + '" data-val="' + k + '"' + pressed(q.curLang === k) + '>' + LANGS[k].label + '</button>';
+      return '<button class="lang-btn' + (q.curLang === k ? ' on' : '') + '" data-action="' + action + '" data-val="' + k + '"' + pressed(q.curLang === k) + '>' + LANGS[k].label + '</button>';
     }).join('') + '</div>';
 }
 
@@ -2072,109 +2057,9 @@ function shortcutsOn() {
   return !(s && s.prefs && s.prefs.shortcuts === false);
 }
 
-function revealLabel(locked) {
-  return locked ? '🎧 聽完先可以睇答案' : '寫好啦，睇答案 👀';
-}
-
-function listenHtml(q) {
-  const hasHint = !!(q.hints && q.hints[q.words[q.idx]]);   // 有提示句先出「💡 提示句」掣
-  return '<p class="prompt" data-focus>聽下，寫喺紙上面 ✏️</p>' +
-    '<button class="speaker" id="speakerBtn" data-action="speak" aria-label="再聽一次">🔊</button>' +
-    '<div class="status" id="status">' + (q.waiting ? WAIT_HTML : '') + '</div>' +
-    langSwitch(q) +
-    '<div class="read-row"><button class="btn ghost small" data-action="slow">🐢 再讀慢啲</button>' +
-    (hasHint ? '<button class="btn ghost small" id="hintBtn" data-action="hint"' + (q.locked ? ' disabled' : '') + '>💡 提示句</button>' : '') + '</div>' +
-    '<button class="btn green block" id="revealBtn" style="margin-top:22px;min-height:64px;font-size:1.25rem" data-action="reveal"' +
-    (q.locked ? ' disabled' : '') + '>' + revealLabel(q.locked) + '</button>' +
-    // 預留位置（min-height），鎖定提示出現／消失時版面唔會跳；內容由 syncLockHint 填
-    '<p class="lock-hint" id="lockHint" role="status"></p>' +
-    (shortcutsOn() ? '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>Enter = 睇答案</span></p>' : '');
-}
-
-/* 「睇答案」鎖定期間顯示「聽唔到？撳 🔊 再試」，解鎖即清走。
-   延遲一陣先填入，等讀屏軟件偵測到 role=status 內容有變而公佈一次 */
-function syncLockHint() {
-  const q = ui.quiz;
-  const el = document.getElementById('lockHint');
-  if (!q || !el) return;
-  if (!q.locked) { el.textContent = ''; return; }
-  const idx = q.idx;
-  setTimeout(function () {
-    const now = document.getElementById('lockHint');
-    if (now && ui.view === 'quiz' && ui.quiz === q && q.idx === idx && q.phase === 'listen' && q.locked) {
-      now.textContent = LOCK_HINT;
-    }
-  }, 100);
-}
-
-function answerHtml(q, word) {
-  // 字號由 CSS 按答案框實際闊度計（--n = 字數），見 style.css .answer-box
-  const n = Math.max(Array.from(word).length, 1);
-  const hint = q.hints ? q.hints[word] || '' : '';
-  return '<p class="prompt" data-focus>答案係</p>' +
-    '<div class="answer-wrap"><div class="answer-box" style="--n:' + n + '">' + esc(word) + '</div></div>' +
-    (hint ? '<p class="answer-hint">提示句：' + esc(hint) + '</p>' : '') +
-    langSwitch(q) +
-    '<div><button class="btn ghost small" data-action="speak">🔊 再聽一次</button></div>' +
-    '<p class="prompt" style="margin-top:18px">你寫啱咗嗎？</p>' +
-    '<div class="two-btns">' +
-    '<button class="btn green" data-action="mark" data-ok="1">✓ 啱咗</button>' +
-    '<button class="btn red" data-action="mark" data-ok="0">✗ 錯咗</button></div>' +
-    (shortcutsOn() ? '<p class="kbd-hint">快捷鍵：<span>空白 = 重聽</span> <span>1 = 啱咗</span> <span>2 = 錯咗</span></p>' : '');
-}
-
-function pickHtml(q, chars) {
-  const sz = chars.length <= 4 ? 'min(20vw,96px)' : 'min(15vw,72px)';
-  const tiles = chars.map(function (c, i) {
-    return '<button class="tile' + (q.pickBad.indexOf(i) !== -1 ? ' bad' : '') + '" data-action="togglePick" data-i="' + i + '"' + pressed(q.pickBad.indexOf(i) !== -1) + '>' + esc(c) + '</button>';
-  }).join('');
-  return '<p class="prompt" data-focus>邊個字寫錯咗？</p>' +
-    '<p class="muted" style="margin-top:4px">撳返寫錯咗嘅字，唔肯定可以直接撳確定</p>' +
-    '<div class="tiles" style="--sz:' + sz + '">' + tiles + '</div>' +
-    '<button class="btn block" data-action="confirmPick">確定 ✓</button>' +
-    '<button class="link" data-action="backToAnswer">← 返轉頭</button>';
-}
-
-function feedbackHtml(s, q, word) {
-  const ok = q.fb.ok;
-  let burst = '';
-  if (ok) {
-    for (let i = 0; i < 10; i++) {
-      const a = (Math.PI * 2 * i) / 10;
-      burst += '<span style="--dx:' + Math.round(Math.cos(a) * 125) + 'px;--dy:' + Math.round(Math.sin(a) * 125) + 'px">' +
-        pick(['⭐', '✨', '🌟']) + '</span>';
-    }
-  }
-  return (ok ? '<div class="burst">' + burst + '</div>' : '') +
-    '<div class="fb-av">' + esc(s.avatar) + '</div>' +
-    '<h2>' + esc(q.fb.msg) + '</h2>' +
-    // --n = 字數、--b = 標紅嘅字數：字號由 CSS 按畫面闊度計，長詞語唔會斷行（見 style.css .fb-word）
-    (ok ? '' : '<div class="fb-word" style="--n:' + Math.max(Array.from(word).length, 1) + ';--b:' + (q.fb.bad || []).length + '">' +
-      charsHtml(word, q.fb.bad) + '</div>');
-}
-
+/* 默書畫面：只有定時／自助兩種方式（函數名沿用，內容交畀 newModeView） */
 function quizView(s) {
-  const q = ui.quiz;
-  if (q.mode && q.mode !== 'normal') return newModeView(s, q);
-  const total = q.words.length;
-  const word = q.words[q.idx];
-  let body;
-  let cls = '';
-  if (q.phase === 'listen') body = listenHtml(q);
-  else if (q.phase === 'answer') body = answerHtml(q, word);
-  else if (q.phase === 'pick') body = pickHtml(q, Array.from(word));
-  else body = feedbackHtml(s, q, word);
-
-  if (q.phase === 'feedback') cls = ' fb ' + (q.fb.ok ? 'ok' : 'bad');
-  else if (q.enter) cls = ' card-enter';
-  q.enter = false;
-
-  return '<div class="quiz-top"><button class="quit" data-action="quit" aria-label="停止默書">✕</button>' +
-    '<div class="track"><div class="fill" style="width:' + (q.shown * 100) + '%"></div>' +
-    '<div class="runner" style="left:calc((100% - 32px) * ' + q.shown + ')">' + esc(s.avatar) + '</div>' +
-    '<span class="flag">🏁</span></div>' +
-    '<div class="count">' + (q.idx + 1) + ' / ' + total + '</div></div>' +
-    '<div class="card quiz-card' + cls + '">' + body + '</div>';
+  return newModeView(s, ui.quiz);
 }
 
 /* ----- 新默書方式畫面（純回傳 HTML，冇副作用；詞語／提示句一律 esc） ----- */
@@ -2240,44 +2125,35 @@ function selfView(s, q) {
     '</div>';
 }
 
-/* 對答案：整份詞語清單，點詞語切換「錯」；錯而且 ≥ 2 字先展開逐字掣（唔揀都得） */
+/* 對答案：每個詞語拆成單字字卡，預設全部「啱」，只需點選寫錯嘅字；任何一隻字錯，成個詞語就算錯 */
 function reviewView(s, q) {
   const n = q.words.length, bad = rvCount(q);
   const rows = q.words.map(function (w, i) {
-    const wrong = q.rv.wrong[i];
-    const hint = q.hints ? q.hints[w] || '' : '';
     const chars = Array.from(w);
-    let charBtns = '';
-    if (wrong && chars.length >= 2) {
-      charBtns = '<div class="rv-chars" role="group" aria-label="邊個字寫錯咗（可唔揀）">' + chars.map(function (c, j) {
-        if (/\s/.test(c)) return '';
-        const on = q.rv.bad[i].indexOf(j) !== -1;
-        return '<button class="rv-ch" data-action="rvChar" data-i="' + i + '" data-val="' + j + '"' + pressed(on) +
-          ' aria-label="第 ' + (j + 1) + ' 個字「' + esc(c) + '」，' + (on ? '已標記為寫錯' : '標記為寫錯') + '">' + esc(c) + '</button>';
-      }).join('') + '</div>';
-    }
-    return '<li class="rv-row' + (wrong ? ' bad' : '') + '">' +
-      '<button class="rv-word" data-action="rvToggle" data-i="' + i + '"' + pressed(wrong) +
-      ' aria-label="' + esc(w) + (wrong ? '，已標記為寫錯，撳一下取消' : '，撳一下標記為寫錯') + '">' +
-      '<span class="rv-text">' + esc(w) + '</span>' +
-      (hint ? '<small class="rv-hint">' + esc(hint) + '</small>' : '<span class="rv-hint"></span>') +
-      '<span class="rv-flag">✗ 錯</span></button>' + charBtns + '</li>';
+    const wrong = q.rv.bad[i].length > 0;
+    const cards = chars.map(function (c, j) {
+      if (/\s/.test(c)) return '';
+      const on = q.rv.bad[i].indexOf(j) !== -1;
+      return '<button class="rv-ch" data-action="rvChar" data-i="' + i + '" data-val="' + j + '"' + pressed(on) +
+        ' aria-label="' + rvCharLabel(j, c, on) + '">' + esc(c) + '</button>';
+    }).join('');
+    return '<li class="rv-row' + (wrong ? ' bad' : '') + '"><span class="rv-no">' + (i + 1) + '</span>' +
+      '<div class="rv-chars" role="group" aria-label="第 ' + (i + 1) + ' 個詞語，逐字點選寫錯嘅字">' + cards + '</div></li>';
   }).join('');
   return newTopHtml(s, q, '共 ' + n + ' 個') +
     '<div class="card review-card"><h2 data-focus>對答案</h2>' +
-    '<p class="muted">點選寫錯嘅詞語；多字詞語可以再揀寫錯嘅字（唔揀都得）。</p>' +
     '<ul class="rv-list">' + rows + '</ul></div>' +
     '<div class="rv-bar"><span class="rv-count">錯 ' + bad + ' 個／共 ' + n + ' 個</span>' +
     '<button class="btn green" data-action="rvConfirm">確認，記錄成績 ✓</button></div>';
 }
 
+function rvCharLabel(j, c, on) {
+  return '第 ' + (j + 1) + ' 個字「' + esc(c) + '」，' + (on ? '已標記為寫錯' : '標記為寫錯');
+}
 /* 進度條嘅動物同進度要喺畫面出現後再移動，先有滑動效果 */
 function afterQuizRender() {
   const q = ui.quiz;
-  const isNew = q.mode && q.mode !== 'normal';
-  const target = isNew
-    ? (q.phase === 'review' ? 1 : q.phase === 'prep' ? 0 : q.idx / q.words.length)
-    : (q.idx + (q.phase === 'feedback' ? 1 : 0)) / q.words.length;
+  const target = q.phase === 'review' ? 1 : q.phase === 'prep' ? 0 : q.idx / q.words.length;
   if (Math.abs(target - q.shown) < 0.0001) return;
   const runner = document.querySelector('.runner');
   const fill = document.querySelector('.track .fill');
@@ -2396,12 +2272,12 @@ function statsView(s) {
     const st = src[k];
     return { w: k, attempts: st.attempts, wrong: st.wrong, rate: Math.min(100, pct(st.wrong, st.attempts)) };
   }).filter(function (x) { return x.wrong > 0; }).sort(function (a, b) {
-    return b.rate - a.rate || b.wrong - a.wrong;
+    return isChar ? b.wrong - a.wrong || b.rate - a.rate : b.rate - a.rate || b.wrong - a.wrong;
   }).slice(0, 15);
 
   const badMap = badIndexMap(s);
   const emptyMsg = isChar
-    ? '仲未有單字統計。默書時答錯，再揀返寫錯嘅字，就會記錄到。'
+    ? '仲未有單字統計。默書對答案時點選寫錯嘅字，就會記錄到。'
     : '到依家一個字都冇錯過！';
   const rateHtml = rows.length ? rows.map(function (x) {
     return '<div class="rate-row"><span class="w">' + (isChar ? esc(x.w) : charsHtml(x.w, badMap[x.w])) + '</span>' +
@@ -2421,7 +2297,7 @@ function statsView(s) {
     '<div><div class="num">' + avg + '</div><div class="muted">平均正確率</div></div>' +
     '<div><div class="num">' + Object.keys(s.bank).length + '</div><div class="muted">錯字怪獸</div></div></div></div>' +
     '<div class="card"><h3>最近 ' + recent.length + ' 次成績（%）</h3><div class="bars">' + bars + '</div></div>' +
-    '<div class="card"><h3>最易錯嘅字（錯誤率）</h3>' +
+    '<div class="card"><h3>' + (isChar ? '最常寫錯嘅字（錯誤次數）' : '最易錯嘅字（錯誤率）') + '</h3>' +
     '<div class="toggle-select" style="margin:10px 0">' + tab('word', '詞語') + tab('char', '單字') + '</div>' +
     (isChar ? '' : '<p class="muted">紅色標記 = 曾經寫錯嘅字</p>') +
     rateHtml + '</div>' +
@@ -2491,131 +2367,12 @@ function recordView(s) {
 }
 
 /* =====================================================
-   默書流程（時序）
-   開始／轉題 → 等一等 → 朗讀 → 睇答案 → 評分 → 動畫 → 下一題
+   默書流程（朗讀狀態）
+   定時／自助各自嘅時序喺 timed*／self* 函數入面處理，呢度只留朗讀掣動畫
    ===================================================== */
 function setSpeaking(on) {
   const b = document.getElementById('speakerBtn');
   if (b) b.classList.toggle('speaking', on);
-}
-
-function setWaiting(on) {
-  const q = ui.quiz;
-  if (!q) return;
-  q.waiting = on;
-  const st = document.getElementById('status');
-  if (st) st.innerHTML = on ? WAIT_HTML : '';
-}
-
-/* 朗讀而家呢題，語言用學生為呢個詞語揀咗嘅語言。
-   只讀詞語；提示句由學生按「💡 提示句」先讀（actions.hint）。
-   rate（「再讀慢啲」）有傳就用佢。「睇答案」喺詞語讀完就解鎖 */
-function speakCurrent(rate) {
-  const q = ui.quiz;
-  const idx = q.idx;
-  q.speakSeq = (q.speakSeq || 0) + 1;
-  const seq = q.speakSeq;
-  // 只處理「同一題、同一次朗讀」嘅事件：上一題遲來嘅完結訊號唔可以解鎖下一題
-  const same = function () { return ui.quiz === q && q.idx === idx && q.speakSeq === seq; };
-  const word = q.words[q.idx];
-  setWaiting(false);   // 一開始朗讀，「預備緊」提示一定要走
-  speak(word, q.curLang, rate || SPEEDS[q.speed].rate, {
-    onstart: function () {
-      if (!same()) return;
-      setWaiting(false);
-      setSpeaking(true);
-    },
-    onend: function () {
-      if (!same()) return;
-      setWaiting(false);
-      setSpeaking(false);
-      unlockReveal();   // 詞語讀完先可以睇答案
-    }
-  });
-  if (q.locked) {
-    clearTimeout(timers.lock);
-    // 瀏覽器唔支援朗讀，或者收唔到完結訊號時，過一陣自動解鎖，避免學生卡住
-    timers.lock = setTimeout(unlockReveal, 'speechSynthesis' in window ? LOCK_MAX_MS : 0);
-  }
-}
-
-/* 詞語第一次朗讀完整播完後，「睇答案」先可以撳 */
-function unlockReveal() {
-  const q = ui.quiz;
-  if (!q || !q.locked) return;
-  q.locked = false;
-  clearTimeout(timers.lock);
-  timers.lock = null;
-  const hb = document.getElementById('hintBtn');   // 提示句掣同「睇答案」一齊解鎖
-  if (hb) hb.disabled = false;
-  const b = document.getElementById('revealBtn');
-  if (!b) return;
-  b.disabled = false;
-  const hint = document.getElementById('lockHint');
-  if (hint) hint.textContent = '';
-  b.textContent = revealLabel(false);
-  b.classList.remove('pop-in');
-  void b.offsetWidth;   // 重新播放動畫
-  b.classList.add('pop-in');
-}
-
-function scheduleSpeak(ms) {
-  clearTimeout(timers.speak);
-  setWaiting(true);
-  timers.speak = setTimeout(function () {
-    timers.speak = null;
-    setWaiting(false);
-    if (ui.view !== 'quiz' || ui.quiz.phase !== 'listen') return;
-    speakCurrent();
-  }, ms);
-}
-
-function cancelScheduled() {
-  clearTimeout(timers.speak);
-  timers.speak = null;
-  setWaiting(false);
-}
-
-function prepareQuestion(enter) {
-  const q = ui.quiz;
-  q.phase = 'listen';
-  q.curLang = q.lang;   // 每個詞語都由預設語言開始
-  q.pickBad = [];
-  q.fb = null;
-  q.enter = enter;
-  q.waiting = true;
-  q.locked = true;      // 第一次朗讀播完之前，唔可以睇答案
-  clearTimeout(timers.lock);
-  timers.lock = null;
-}
-
-function beginQuestion() {
-  stopSpeech();   // 上一題仲未讀完嘅聲音唔好帶入下一題
-  prepareQuestion(true);
-  render();
-  scheduleSpeak(NEXT_DELAY);
-}
-
-function commitAnswer(ok, bad) {
-  const s = me();
-  const q = ui.quiz;
-  const word = q.words[q.idx];
-  recordAnswer(s, word, ok, bad, q);
-  q.results.push({ word: word, ok: ok, bad: bad });
-  saveDB();
-  q.fb = { ok: ok, bad: bad, msg: pick(ok ? CHEERS : COMFORTS) };
-  q.phase = 'feedback';
-  render();
-  // 動畫播完先轉下一題，兩者唔會重疊
-  timers.adv = setTimeout(advance, FEEDBACK_MS);
-}
-
-function advance() {
-  timers.adv = null;
-  const q = ui.quiz;
-  q.idx += 1;
-  if (q.idx >= q.words.length) { finishQuiz(me()); return; }
-  beginQuestion();
 }
 
 function finishQuiz(s) {
@@ -2629,7 +2386,7 @@ function finishQuiz(s) {
     source: q.source,
     lang: q.lang,
     total: q.results.length,   // 實際答咗嘅題數
-    mode: q.mode || 'normal',   // normal／timed／self
+    mode: q.mode,   // timed／self
     planned: q.words.length,   // 原定題數
     incomplete: q.results.length < q.words.length,
     correct: correct,
@@ -2942,7 +2699,7 @@ Object.assign(actions, {
     lockPin();   // 開始默書通常係交畀小朋友，家長 PIN 即鎖
     const s = me();
     const c = ui.setup;
-    const mode = c.mode === 'timed' || c.mode === 'self' ? c.mode : 'normal';   // 白名單
+    const mode = normaliseMode(c.mode);   // 白名單；非法值（包括已移除嘅 'normal'）回落預設
     if (mode === 'timed' && !('speechSynthesis' in window)) { toast('呢個瀏覽器唔支援朗讀，用唔到定時默書'); return; }
     let words = [];
     let label = '';
@@ -3003,10 +2760,6 @@ Object.assign(actions, {
         setSelfStatus(WAIT_HTML, true);
         timers.run = setTimeout(selfSpeak, FIRST_DELAY);
       }
-    } else {
-      prepareQuestion(false);  // 第一題跟住畫面入場動畫，唔使再滑入
-      go('quiz');
-      scheduleSpeak(FIRST_DELAY);
     }
   },
   again: function () {
@@ -3015,104 +2768,9 @@ Object.assign(actions, {
 });
 
 /* ---------- 默書中 ---------- */
-function canHear() { return ui.quiz && (ui.quiz.phase === 'listen' || ui.quiz.phase === 'answer'); }
-
-/* 自評：啱 → 直接記錄；錯 → 單字詞語直接記錄，多字詞語問邊個字寫錯。撳掣同鍵盤快捷鍵（1／2）共用 */
-function markAnswer(ok) {
-  const q = ui.quiz;
-  if (!q || q.phase !== 'answer') return;   // 只有「答案」階段先生效，回饋動畫期間重覆撳唔會再記錄
-  if (ok) { commitAnswer(true, []); return; }
-  if (Array.from(q.words[q.idx]).length <= 1) { commitAnswer(false, [0]); return; }
-  q.pickBad = [];
-  q.phase = 'pick';   // 多過一個字，問邊個字寫錯
-  render();
-}
-
 Object.assign(actions, {
-  speak: function () {
-    if (!canHear()) return;
-    cancelScheduled();
-    speakCurrent();
-  },
-  slow: function () {
-    if (!canHear()) return;
-    cancelScheduled();
-    speakCurrent(SLOW_RATE);
-  },
-  // 提示句由學生按「💡 提示句」先讀：同一語言、同一把聲，速度用 hintSpeed
-  hint: function () {
-    const q = ui.quiz;
-    if (!canHear() || q.phase !== 'listen' || q.locked) return;
-    const hint = q.hints ? q.hints[q.words[q.idx]] || '' : '';
-    if (!hint) return;
-    cancelScheduled();
-    q.speakSeq = (q.speakSeq || 0) + 1;   // 令仍在途嘅詞語完結訊號失效
-    const idx = q.idx, seq = q.speakSeq;
-    const same = function () { return ui.quiz === q && q.idx === idx && q.speakSeq === seq; };
-    speak(hint, q.curLang, SPEEDS[q.hintSpeed || q.speed].rate, {   // speak() 開頭已 synth.cancel()，唔會同現有朗讀重疊
-      onstart: function () { if (same()) setSpeaking(true); },
-      onend: function () { if (same()) setSpeaking(false); }
-    });
-  },
-  setWordLang: function (el) {
-    if (!canHear()) return;
-    ui.quiz.curLang = el.dataset.val;
-    Array.prototype.forEach.call(el.parentElement.children, function (x) {
-      x.classList.toggle('on', x === el);
-      x.setAttribute('aria-pressed', String(x === el));
-    });
-    cancelScheduled();
-    speakCurrent();
-  },
-  reveal: function () {
-    const q = ui.quiz;
-    if (q.phase !== 'listen' || q.locked) return;
-    cancelScheduled();
-    q.phase = 'answer';
-    render();
-  },
-  mark: function (el) { markAnswer(el.dataset.ok === '1'); },
-  togglePick: function (el) {
-    const q = ui.quiz;
-    if (q.phase !== 'pick') return;
-    const i = Number(el.dataset.i);
-    const at = q.pickBad.indexOf(i);
-    if (at === -1) q.pickBad.push(i); else q.pickBad.splice(at, 1);
-    el.setAttribute('aria-pressed', String(el.classList.toggle('bad')));
-  },
-  confirmPick: function () {
-    const q = ui.quiz;
-    if (q.phase !== 'pick') return;
-    commitAnswer(false, q.pickBad.slice().sort(function (a, b) { return a - b; }));
-  },
-  backToAnswer: function () {
-    if (ui.quiz.phase !== 'pick') return;
-    ui.quiz.phase = 'answer';
-    render();
-  },
-  quit: function () {
-    if (ui.quiz && ui.quiz.mode !== 'normal') { quitNew(ui.quiz); return; }   // 定時／自助：停止唔記錄任何嘢
-    // 確認框打開期間暫停：唔朗讀、唔轉下一題
-    clearTimers();
-    currentUtterance = null;   // 被 cancel 嘅句子唔好觸發 onend（否則會提早解鎖「睇答案」）
-    stopSpeech();
-    setSpeaking(false);
-    setWaiting(false);
-    confirmBox({
-      icon: '🛑', title: '停止默書？',
-      text: '已經答咗嘅題目會保留。', okText: '停止'
-    }, function () {
-      if (ui.view !== 'quiz') return;
-      const s = me();
-      if (ui.quiz.results.length) finishQuiz(s); else go('menu');
-    }, function () {
-      // 取消：由暫停嘅位置繼續
-      if (ui.view !== 'quiz') return;
-      const q = ui.quiz;
-      if (q.phase === 'listen') scheduleSpeak(NEXT_DELAY);
-      else if (q.phase === 'feedback') advance();
-    });
-  }
+  // 定時／自助：停止唔記錄任何嘢
+  quit: function () { if (ui.quiz) quitNew(ui.quiz); }
 });
 
 /* ---------- 新默書方式：定時全自動／學生自助 ----------
@@ -3365,32 +3023,31 @@ function enterReview() {
   const q = ui.quiz;
   clearTimers(); currentUtterance = null; stopSpeech(); setSpeaking(false);
   q.phase = 'review';
-  q.rv = { wrong: q.words.map(function () { return false; }), bad: q.words.map(function () { return []; }) };
+  q.rv = { bad: q.words.map(function () { return []; }) };
   ui.clickGuardUntil = performance.now() + CLICK_GUARD_MS;   // 防「完成，對答案」連點後第二下落喺清單上
   render();
   window.scrollTo(0, 0);
 }
 
-function rvCount(q) { return q.rv.wrong.filter(function (x) { return x; }).length; }
+function rvCount(q) { return q.rv.bad.filter(function (a) { return a.length > 0; }).length; }
 
 /* 下標校驗：整數而且喺詞語範圍內 */
 function rvIndex(q, raw) {
   const i = Number(raw);
-  return q && q.mode !== 'normal' && q.phase === 'review' && q.rv && Number.isInteger(i) && i >= 0 && i < q.words.length ? i : -1;
+  return q && q.phase === 'review' && q.rv && Number.isInteger(i) && i >= 0 && i < q.words.length ? i : -1;
 }
 
 /* 結算：逐個詞語調用既有 recordAnswer，再交畀 finishQuiz 寫紀錄。q.committed 先上鎖，連點只寫一次 */
 function commitReview() {
   const q = ui.quiz, s = me();
-  if (!q || q.mode === 'normal' || q.phase !== 'review' || q.committed) return;
+  if (!q || q.phase !== 'review' || q.committed) return;
   if (!s) { toast('搵唔到同學資料，今次冇記錄'); go('home'); return; }
   q.committed = true;
   ui.clickGuardUntil = performance.now() + CLICK_GUARD_MS;
   q.results = [];
   q.words.forEach(function (word, i) {
-    const ok = !q.rv.wrong[i];
-    const chars = Array.from(word).length;
-    const bad = ok ? [] : chars <= 1 ? [0] : q.rv.bad[i].slice().sort(function (a, b) { return a - b; });
+    const bad = q.rv.bad[i].slice().sort(function (a, b) { return a - b; });
+    const ok = bad.length === 0;
     recordAnswer(s, word, ok, bad, q);
     q.results.push({ word: word, ok: ok, bad: bad });
   });
@@ -3398,26 +3055,27 @@ function commitReview() {
 }
 
 Object.assign(actions, {
-  rvToggle: function (el) {
-    const q = ui.quiz, i = rvIndex(q, el.dataset.i);
-    if (i < 0) return;
-    q.rv.wrong[i] = !q.rv.wrong[i];
-    if (!q.rv.wrong[i]) q.rv.bad[i] = [];
-    render();
-    announce(q.words[i] + (q.rv.wrong[i] ? '：標記為錯' : '：取消標記') + '。錯 ' + rvCount(q) + ' 個，共 ' + q.words.length + ' 個');
-  },
+  /* 逐字字卡：原位更新 DOM（唔 render，字卡唔會失焦／跳位） */
   rvChar: function (el) {
     const q = ui.quiz, i = rvIndex(q, el.dataset.i);
-    if (i < 0 || !q.rv.wrong[i]) return;
+    if (i < 0) return;
+    const chars = Array.from(q.words[i]);
     const j = Number(el.dataset.val);
-    if (!Number.isInteger(j) || j < 0 || j >= Array.from(q.words[i]).length) return;
+    if (!Number.isInteger(j) || j < 0 || j >= chars.length || /\s/.test(chars[j])) return;
     const at = q.rv.bad[i].indexOf(j);
     if (at === -1) q.rv.bad[i].push(j); else q.rv.bad[i].splice(at, 1);
-    render();
+    const on = at === -1;
+    el.setAttribute('aria-pressed', String(on));
+    el.setAttribute('aria-label', rvCharLabel(j, chars[j], on));
+    const row = el.closest('.rv-row');
+    if (row) row.classList.toggle('bad', q.rv.bad[i].length > 0);
+    const cnt = document.querySelector('.rv-count');
+    const text = '錯 ' + rvCount(q) + ' 個／共 ' + q.words.length + ' 個';
+    if (cnt) cnt.textContent = text;
+    announce('第 ' + (j + 1) + ' 個字「' + chars[j] + '」：' + (on ? '標記為錯' : '取消標記') + '。' + text);
   },
   rvConfirm: commitReview
 });
-
 /* ----- 停止同鍵盤 ----- */
 /* 停止：新方式從不調用 finishQuiz／recordAnswer／saveDB，所以紀錄同統計同開始前完全一樣 */
 function quitNew(q) {
@@ -3474,34 +3132,37 @@ function timedHintText(prefs) {
   return msg;
 }
 
+/* 設定頁內嘅定時默書設定卡：朗讀秒數（4 級）同朗讀次數，存喺 s.prefs.timed */
+function timedSettingsHtml(p) {
+  const rows = TIER_LABELS.map(function (label, i) {
+    return '<div class="tier-row"><span class="tier-label">' + label + '</span>' +
+      '<button class="step" data-action="tierStep" data-i="' + i + '" data-val="-1" aria-label="' + label + '，減一秒">−</button>' +
+      '<span class="tier-val"><output id="tierSecs' + i + '">' + p.timed.secs[i] + '</output> 秒</span>' +
+      '<button class="step" data-action="tierStep" data-i="' + i + '" data-val="1" aria-label="' + label + '，加一秒">＋</button></div>';
+  }).join('');
+  const reads = [1, 2, 3].map(function (n) {
+    return '<button class="chip' + (p.timed.reads === n ? ' on' : '') + '" data-action="setTimedReads" data-val="' + n + '"' + pressed(p.timed.reads === n) + '>' + n + ' 次</button>';
+  }).join('');
+  return '<div class="card" style="margin-top:16px"><h2>定時默書</h2>' +
+    '<p class="muted" style="margin-top:0">只影響定時默書。</p>' +
+    '<div class="timed-set solo"><span class="field-label">每個詞語停留幾多秒？</span>' + rows +
+    '<span class="field-label">每個詞語讀幾多次？</span>' +
+    '<div class="toggle-select" data-group="timedReads">' + reads + '</div>' +
+    '<button class="link" data-action="timedDefaults">還原預設秒數</button>' +
+    '<p class="muted" id="timedHint" role="status">' + esc(timedHintText(p)) + '</p></div></div>';
+}
+
 function modeCardHtml(c) {
-  const p = me().prefs;
   const noSpeech = !('speechSynthesis' in window);
+  const cur = normaliseMode(c.mode);   // 非法值（包括已移除嘅 'normal'）顯示預設方式
   const opt = function (mode, title, desc, disabled) {
-    const on = c.mode === mode || (mode === 'normal' && c.mode !== 'timed' && c.mode !== 'self');
+    const on = cur === mode;
     return '<button class="mode-opt' + (on ? ' on' : '') + '" data-action="setOpt" data-key="mode" data-val="' + mode + '"' + pressed(on) + (disabled ? ' disabled' : '') + '>' +
       '<b>' + title + '</b><small>' + desc + '</small></button>';
   };
-  let timedBlock = '';
-  if (c.mode === 'timed') {
-    const rows = TIER_LABELS.map(function (label, i) {
-      return '<div class="tier-row"><span class="tier-label">' + label + '</span>' +
-        '<button class="step" data-action="tierStep" data-i="' + i + '" data-val="-1" aria-label="' + label + '，減一秒">−</button>' +
-        '<span class="tier-val"><output id="tierSecs' + i + '">' + p.timed.secs[i] + '</output> 秒</span>' +
-        '<button class="step" data-action="tierStep" data-i="' + i + '" data-val="1" aria-label="' + label + '，加一秒">＋</button></div>';
-    }).join('');
-    const reads = [1, 2, 3].map(function (n) {
-      return '<button class="chip' + (p.timed.reads === n ? ' on' : '') + '" data-action="setTimedReads" data-val="' + n + '"' + pressed(p.timed.reads === n) + '>' + n + ' 次</button>';
-    }).join('');
-    timedBlock = '<div class="timed-set"><span class="field-label">每個詞語停留幾多秒？</span>' + rows +
-      '<span class="field-label">每個詞語讀幾多次？</span>' +
-      '<div class="toggle-select" data-group="timedReads">' + reads + '</div>' +
-      '<button class="link" data-action="timedDefaults">還原預設秒數</button>' +
-      '<p class="muted" id="timedHint" role="status">' + esc(timedHintText(p)) + '</p></div>';
-  }
+  const timedBlock = cur === 'timed' ? '<p class="muted">朗讀秒數同次數喺主頁「設定」入面改。</p>' : '';
   return '<div class="card" style="margin-top:16px"><h2>默書方式</h2>' +
     '<div class="mode-list" role="group" aria-label="默書方式">' +
-    opt('normal', QUIZ_MODES.normal.label, '逐題聽，自己睇答案，即時剔啱或錯', false) +
     opt('timed', QUIZ_MODES.timed.label, noSpeech ? '呢個瀏覽器唔支援朗讀，用唔到定時默書' : '全自動逐個詞語朗讀，每個限時；完成後對答案', noSpeech) +
     opt('self', QUIZ_MODES.self.label, '學生自己按上一個／下一個，不計時；完成後對答案', false) +
     '</div>' + timedBlock + '</div>';
@@ -3722,7 +3383,6 @@ document.addEventListener('click', function (e) {
   if (fn) fn(el);
   // 滑鼠／觸控（detail > 0）撳完朗讀類掣就放走焦點，等 Enter／空白繼續行默書快捷鍵；
   // 鍵盤啟動嘅 click（detail === 0）唔處理，保持鍵盤同讀屏用家嘅焦點位置
-  if (e.detail > 0 && (el.dataset.action === 'speak' || el.dataset.action === 'slow' || el.dataset.action === 'hint' || el.dataset.action === 'setWordLang')) el.blur();
   // 新默書方式：selfPrev／selfNext 會 render()，被撳嗰粒掣已經脫離 DOM，要放走重畫後還原咗焦點嘅新掣，空白／方向鍵快捷鍵先繼續生效
   if (e.detail > 0 && NEW_BLUR.indexOf(el.dataset.action) !== -1) {
     const a = document.activeElement;
@@ -3754,8 +3414,8 @@ document.addEventListener('keydown', function (e) {
   }
 });
 
-/* 默書鍵盤快捷鍵：空白 = 重聽、Enter = 睇答案、1 = 啱咗、2 = 錯咗。
-   只喺默書畫面生效，而且每個鍵都要符合當時階段（回饋動畫、揀錯字階段全部唔觸發）。
+/* 默書鍵盤快捷鍵：自助 = 空白重讀、←／→ 轉詞語、Enter 去下一個；定時 = 空白暫停／繼續（詳見 newModeKey）。
+   只喺默書畫面生效，而且每個鍵都要符合當時階段。
    以下情況一律唔觸發：確認框打開（計時已暫停）、輸入框／文字區／下拉選單／可編輯內容、帶修飾鍵、長按重覆。
    焦點喺按鈕或連結時，空白同 Enter 交畀瀏覽器原生處理（否則一撳會觸發兩次） */
 document.addEventListener('keydown', function (e) {
@@ -3772,14 +3432,7 @@ document.addEventListener('keydown', function (e) {
     if (e.key === ' ' && !onControl) e.preventDefault();
     return;
   }
-  if (q.mode === 'timed' || q.mode === 'self') { newModeKey(e, q, onControl); return; }   // 新默書方式自己處理
-  if (e.key === ' ' || e.key === 'Enter') {
-    if (onControl) return;
-    e.preventDefault();   // 空白鍵預設會捲動頁面
-    if (e.key === ' ') actions.speak(); else actions.reveal();
-  } else if (e.key === '1' || e.key === '2') {
-    markAnswer(e.key === '1');   // markAnswer 自己檢查階段
-  }
+  newModeKey(e, q, onControl);   // 定時／自助各自處理
 });
 
 document.addEventListener('change', function (e) {
