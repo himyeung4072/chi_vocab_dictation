@@ -41,6 +41,9 @@ const TIMED_SECS_DEFAULT = [8, 10, 12, 15];
 const TIMED_SECS_MIN = 3, TIMED_SECS_MAX = 60;
 const TIMED_READS_DEFAULT = 2, TIMED_READS_MAX = 3;
 const TIMED_PREP_MS = 3000;     // 定時默書開始前嘅預備時間（可暫停）
+const SOUND_VOL_DEFAULT = 0.3;  // 音效預設音量（0–1）；實際輸出 = 音量 × 各音效基準 gain
+const SOUND_GAIN_MAX = 0.3;     // 單一音效峰值 gain 上限
+const SOUND_VOICES_MAX = 8;     // 同時發聲上限（防連按疊聲）
 const TIMED_MIN_SLOT_S = 2.5;   // 每次朗讀最少預留秒數（秒數 ÷ 次數 < 2.5 就喺設定頁警告，唔強制）
 const SELF_SPEAK_DELAY = 250;   // 自助：切換詞語後等 250ms 先朗讀，連撳時只讀最後一個
 const CLICK_GUARD_MS = 500;     // 進入對答案／結果頁後，短時間內忽略點擊（防連點誤觸新畫面）
@@ -132,7 +135,7 @@ function saveDB() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify(db));
   } catch (e) {
-    toast('儲存唔到資料，請檢查瀏覽器設定');
+    toastErr('儲存唔到資料，請檢查瀏覽器設定');
   }
 }
 
@@ -498,6 +501,18 @@ function cleanTimedPrefs(x) {
   return { secs: secs, reads: Number.isInteger(r) && r >= 1 && r <= TIMED_READS_MAX ? r : TIMED_READS_DEFAULT };
 }
 
+/* 音效音量（prefs.soundVol）：0–1，兩位小數；型別錯誤回退預設，超出範圍夾返；0 係合法（等於靜音） */
+function cleanSoundVol(x) {
+  const n = numOr(x, NaN);   // numOr 已擋非數字／NaN／Infinity，並把負數變 0
+  return Number.isFinite(n) ? Math.round(Math.min(1, n) * 100) / 100 : SOUND_VOL_DEFAULT;
+}
+
+/* 音效開關預設：欄位缺失時用。開啟「減少動態效果」嘅人（對聲音可能較敏感）預設關；手動開咗就寫入 true，之後跟用戶 */
+function soundDefaultOn() {
+  try { return !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+  catch (e) { return true; }
+}
+
 /* 朗讀語言對應嘅聲音欄位：廣東話 voiceYue、普通話 voiceCmn（LANGS 只有兩個語言） */
 function voicePrefKey(langKey) { return langKey === 'yue' ? 'voiceYue' : 'voiceCmn'; }
 
@@ -601,7 +616,9 @@ function normaliseStudent(st) {
     voiceCmn: cleanVoiceURI(pf.voiceCmn),        // 普通話揀咗嘅朗讀聲音；空 = 自動
     voiceURI: cleanVoiceURI(pf.voiceURI),        // 舊版單一聲音；待 migrateLegacyVoice 按聲音語言遷到 voiceYue／voiceCmn，遷完清空
     shortcuts: pf.shortcuts !== false,           // 默書鍵盤快捷鍵；只有明確 false 先關，舊資料／舊備份冇此欄位當開
-    timed: cleanTimedPrefs(pf.timed)             // 定時默書設定；舊資料／舊備份冇此欄位就用預設
+    timed: cleanTimedPrefs(pf.timed),            // 定時默書設定；舊資料／舊備份冇此欄位就用預設
+    sound: typeof pf.sound === 'boolean' ? pf.sound : soundDefaultOn(),   // 音效開關；舊資料冇此欄位就按預設（減少動態效果時關）
+    soundVol: cleanSoundVol(pf.soundVol)         // 音效音量 0–1；舊資料冇此欄位就用預設
   };
   st.grade = Math.min(6, Math.max(1, Math.round(Number(st.grade)) || 1));
   st.avatar = AVATARS.indexOf(st.avatar) !== -1 ? st.avatar : AVATARS[0];
@@ -826,11 +843,148 @@ function speak(text, langKey, rate, hooks) {
 
 /* iOS Safari 要喺用戶點擊時先可以開始朗讀，所以喺第一次點擊時播一句無聲嘅 */
 function unlockSpeech() {
+  unlockAudio();   // 音效同步解鎖（唔影響朗讀）
   if (speechUnlocked || !('speechSynthesis' in window)) return;
   speechUnlocked = true;
   const u = new SpeechSynthesisUtterance(' ');
   u.volume = 0;
   window.speechSynthesis.speak(u);
+}
+
+/* ---------- 音效（Web Audio 即時合成，冇音檔、冇背景音樂） ----------
+   所有出聲一律經 playSound → canPlay 呢個唯一閘門；默書進行中（ui.view === 'quiz'）全部靜音。
+   音效絕不取代畫面提示：每個有聲位置本身都有 toast／按鈕狀態／畫面切換。 */
+let audioCtx = null;      // 單一 AudioContext，重用
+let noiseBuf = null;      // click 用嘅 8ms 噪音，快取
+let soundVoices = 0;      // 目前同時發聲數
+
+/* 只建一個 AudioContext；建立失敗（舊瀏覽器）返回 null，音效當冇 */
+function getAudioContext() {
+  if (audioCtx) return audioCtx;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+  catch (e) { audioCtx = null; }
+  return audioCtx;
+}
+
+/* 用戶手勢時解鎖（iOS 要喺 click／touchend 內 resume）。音效關閉或未揀同學就唔建立 context */
+function unlockAudio() {
+  const s = me();
+  if (!s || !s.prefs.sound) return;
+  const ctx = getAudioContext();
+  if (ctx && ctx.state !== 'running') ctx.resume().catch(function () {});
+}
+
+/* 默書進行中（準備、朗讀、作答、對答案）。注意 ui.quiz 離開默書後唔會清空，所以睇 ui.view */
+function quizInProgress() { return ui.view === 'quiz'; }
+
+/* 唯一閘門：開關、音量、默書進行中。allowInQuiz 只畀「完成，對答案」呢種例外 */
+function canPlay(allowInQuiz) {
+  const s = me();
+  if (!s || !s.prefs.sound || s.prefs.soundVol <= 0) return false;
+  if (quizInProgress() && !allowInQuiz) return false;
+  return true;
+}
+
+/* 登記一個發聲節點，播完斷開（context-cleanup-nodes）；後備計時器防 context 被暫停時計數卡死 */
+function soundTrack(src, nodes, endAt, ctx) {
+  let done = false;
+  const finish = function () {
+    if (done) return;
+    done = true;
+    soundVoices = Math.max(0, soundVoices - 1);
+    nodes.forEach(function (n) { try { n.disconnect(); } catch (e) {} });
+  };
+  soundVoices += 1;
+  src.onended = finish;
+  setTimeout(function () { if (ctx.state === 'running') finish(); }, Math.max(0, (endAt - ctx.currentTime) * 1000) + 500);
+}
+
+/* 有音高滑動嘅音（sine／triangle）：o = { type, f0, f1, t, dur, peak, attack }。
+   指數 envelope，起點 setValueAtTime、目標 0.001 */
+function soundTone(ctx, vol, o) {
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const attack = o.attack || 0.01;
+  const peak = Math.max(0.002, Math.min(SOUND_GAIN_MAX, o.peak) * vol);
+  osc.type = o.type || 'sine';
+  osc.frequency.setValueAtTime(o.f0, o.t);
+  osc.frequency.exponentialRampToValueAtTime(o.f1, o.t + o.dur * 0.6);
+  gain.gain.setValueAtTime(0.001, o.t);
+  gain.gain.exponentialRampToValueAtTime(peak, o.t + attack);
+  gain.gain.exponentialRampToValueAtTime(0.001, o.t + o.dur);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(o.t);
+  osc.stop(o.t + o.dur + 0.02);
+  soundTrack(osc, [osc, gain], o.t + o.dur + 0.02, ctx);
+}
+
+/* 輕 click：約 8ms 濾波噪音，帶通 4000Hz、Q 3 */
+function soundClick(ctx, t, vol) {
+  const len = Math.ceil(ctx.sampleRate * 0.008);
+  if (!noiseBuf || noiseBuf.sampleRate !== ctx.sampleRate) {
+    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (len * 0.25));
+  }
+  const src = ctx.createBufferSource();
+  const filter = ctx.createBiquadFilter();
+  const gain = ctx.createGain();
+  src.buffer = noiseBuf;
+  filter.type = 'bandpass';
+  filter.frequency.value = 4000;
+  filter.Q.value = 3;
+  gain.gain.setValueAtTime(Math.max(0.002, SOUND_GAIN_MAX * vol), t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.012);
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ctx.destination);
+  src.start(t);
+  soundTrack(src, [src, filter, gain], t + 0.02, ctx);
+}
+
+/* 音效對照表：每項 (ctx, t, vol, opts)。全部 sine／triangle／濾波噪音，唔用 square／sawtooth／蜂鳴 */
+const SOUNDS = {
+  click: function (ctx, t, vol) { soundClick(ctx, t, vol); },
+  confirm: function (ctx, t, vol) {
+    soundTone(ctx, vol, { type: 'sine', f0: 520, f1: 780, t: t, dur: 0.14, peak: 0.22 });
+  },
+  pop: function (ctx, t, vol) {   // 低沉輕 pop，下滑
+    soundTone(ctx, vol, { type: 'sine', f0: 230, f1: 140, t: t, dur: 0.09, peak: 0.2 });
+  },
+  start: function (ctx, t, vol) {   // 兩下上行起步提示，總長 < 0.3s
+    soundTone(ctx, vol, { type: 'triangle', f0: 440, f1: 660, t: t, dur: 0.10, peak: 0.2 });
+    soundTone(ctx, vol, { type: 'triangle', f0: 660, f1: 990, t: t + 0.09, dur: 0.14, peak: 0.2 });
+  },
+  alert: function (ctx, t, vol) {   // 溫和提示，輕微下滑
+    soundTone(ctx, vol, { type: 'sine', f0: 660, f1: 520, t: t, dur: 0.16, peak: 0.16 });
+  },
+  resultHigh: function (ctx, t, vol, opts) {   // ≥80% 輕快上行；100% 再加第四音
+    const notes = [[523, 587], [659, 698], [784, 880]];
+    notes.forEach(function (n, i) {
+      soundTone(ctx, vol, { type: 'triangle', f0: n[0], f1: n[1], t: t + i * 0.07, dur: 0.12, peak: 0.2 });
+    });
+    if (opts.perfect) soundTone(ctx, vol, { type: 'triangle', f0: 1047, f1: 1175, t: t + 0.21, dur: 0.22, peak: 0.2 });
+  },
+  resultMid: function (ctx, t, vol) {   // 中性兩音
+    soundTone(ctx, vol, { type: 'sine', f0: 523, f1: 540, t: t, dur: 0.13, peak: 0.17 });
+    soundTone(ctx, vol, { type: 'sine', f0: 587, f1: 600, t: t + 0.1, dur: 0.13, peak: 0.17 });
+  },
+  resultLow: function (ctx, t, vol) {   // 柔和單音，緩緩下滑（唔好蜂鳴）
+    soundTone(ctx, vol, { type: 'sine', f0: 392, f1: 349, t: t, dur: 0.3, peak: 0.14, attack: 0.02 });
+  }
+};
+
+/* opts：{ allowInQuiz, perfect }。出錯一律靜默，音效唔可以令 app 壞 */
+function playSound(name, opts) {
+  try {
+    if (!hasKey(SOUNDS, name) || !canPlay(opts && opts.allowInQuiz)) return;
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    if (ctx.state !== 'running') ctx.resume().catch(function () {});
+    if (soundVoices >= SOUND_VOICES_MAX) return;
+    SOUNDS[name](ctx, ctx.currentTime + 0.005, me().prefs.soundVol, opts || {});
+  } catch (e) { /* 靜默 */ }
 }
 
 function voiceWarning(langKey) {
@@ -935,6 +1089,12 @@ function toast(msg, ms) {
   document.body.appendChild(el);
   setTimeout(function () { el.textContent = msg; }, 50);
   setTimeout(function () { el.remove(); }, ms || 2500);
+}
+
+/* 錯誤／拒絕類提示：先出溫和提示聲（默書進行中 canPlay 會自動靜音），toast 照常顯示 */
+function toastErr(msg, ms) {
+  playSound('alert');
+  toast(msg, ms);
 }
 
 /* 公佈狀態畀讀屏軟件（第 3 / 12 題、答啱咗）。先清空再延遲填字，同一句連續出現都會再讀 */
@@ -1604,7 +1764,7 @@ function doPrint() {
   if (!m) return;
   const go = function () {
     if (!ui.print) return;   // 等字體期間 dialog 已關
-    try { window.print(); } catch (e) { toast('列印唔到，請用瀏覽器選單列印'); }
+    try { window.print(); } catch (e) { toastErr('列印唔到，請用瀏覽器選單列印'); }
   };
   try {
     if (document.fonts && document.fonts.load) {
@@ -1616,13 +1776,13 @@ function doPrint() {
       go();
     }
   } catch (e) {
-    toast('列印唔到，請用瀏覽器選單列印');
+    toastErr('列印唔到，請用瀏覽器選單列印');
   }
 }
 
 function openPrintDialog(src, id) {
   const m = printModel(me(), src, id);
-  if (!m) { toast('冇詞語可以列印'); return; }
+  if (!m) { toastErr('冇詞語可以列印'); return; }
   if (document.querySelector('.modal-back')) return;
   ui.print = { model: m };
   const old = document.getElementById('printRoot');
@@ -1682,7 +1842,7 @@ function lessonText(l) {
 /* 複製文字：有 navigator.clipboard 就用，失敗或者冇就轉 execCommand 後備（揀中 textarea 再複製）。
    fallbackEl 係畫面上現成嘅 textarea（複製文字時用，用家會見到揀中）；冇傳就用臨時 textarea */
 function copyText(text, fallbackEl) {
-  const done = function (ok) { toast(ok ? '已複製 ✓' : '複製唔到，請手動揀取文字'); };
+  const done = function (ok) { if (ok) toast('已複製 ✓'); else toastErr('複製唔到，請手動揀取文字'); };
   const fallback = function () {
     const prev = document.activeElement;
     let el = fallbackEl;
@@ -1792,17 +1952,18 @@ function addSharedLesson(s, lesson) {
   ui.share = null;
   clearShareHash();
   if (s.lessons.some(function (x) { return x.title === lesson.title && lessonText(x) === lessonText(lesson); })) {
-    toast('已經有呢一課');
+    toastErr('已經有呢一課');
     go('lessons');
     return;
   }
   if (s.lessons.length >= SHARE_LESSONS_MAX) {
-    toast('詞庫已經有 ' + SHARE_LESSONS_MAX + ' 課，唔可以再加');
+    toastErr('詞庫已經有 ' + SHARE_LESSONS_MAX + ' 課，唔可以再加');
     return;
   }
   s.lessons.push({ id: uid(), title: lesson.title, words: lesson.words, hints: lesson.hints });
   saveDB();
   toast('已加入「' + lesson.title + '」✓');
+  playSound('confirm');
   go('lessons');
 }
 
@@ -1956,11 +2117,27 @@ function settingsView(s) {
     '<button class="btn blue small" style="margin-top:14px" data-action="testVoice">🔊 試聽</button>' +
     '<div id="voiceNotice">' + voiceNoticeHtml(voiceLangKey(s)) + '</div></div>' +
     timedSettingsHtml(p) +
+    soundSettingsHtml(p) +
     parentCardHtml() +
     backupCardHtml() +
     // 字體署名（CC BY 4.0）：靜態文字，唔涉及資料
     '<p class="muted credit">答案字型：<a href="https://freehkfonts.opensource.hk/download/" target="_blank" rel="noopener">自由香港楷書</a> (Free HK Kai)，' +
     '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>；改編自全字庫正楷體。</p>';
+}
+
+/* 設定頁內嘅音效卡：開關（chip）同音量滑桿，存喺 s.prefs.sound／soundVol（每位同學各自一份） */
+function soundSettingsHtml(p) {
+  const pctVal = Math.round(p.soundVol * 100);
+  const chip = function (on, label) {
+    return '<button class="chip' + (p.sound === on ? ' on' : '') + '" data-action="setSound" data-val="' + (on ? '1' : '0') + '"' + pressed(p.sound === on) + '>' + label + '</button>';
+  };
+  return '<div class="card" style="margin-top:16px"><h2>音效</h2>' +
+    '<span class="field-label" id="soundLabel" style="margin-top:0">音效</span>' +
+    '<div class="toggle-select" data-group="sound" role="group" aria-labelledby="soundLabel">' + chip(true, '開') + chip(false, '關') + '</div>' +
+    '<label class="field-label" for="soundVol">音量 <output id="soundVolOut" for="soundVol">' + pctVal + '%</output></label>' +
+    '<input type="range" id="soundVol" class="range" min="0" max="100" step="5" value="' + pctVal + '" aria-valuetext="' + pctVal + '%"' +
+    ' style="--pct:' + pctVal + '%"' + (p.sound ? '' : ' disabled') + '>' +
+    '<p class="muted" style="margin-top:6px">音效只喺呢位同學嘅設定入面生效；默書進行中會自動靜音。</p></div>';
 }
 
 /* 設定頁改名：失焦／Enter／撳「儲存」先處理，輸入期間唔會重畫 */
@@ -2448,6 +2625,8 @@ function finishQuiz(s) {
   };
   go('result');
   const p = pct(correct, rec.total);
+  // 結算聲按分數揀：中途停止（incomplete）當中性；此刻 ui.view 已係 result，唔需要 allowInQuiz
+  playSound(rec.incomplete ? 'resultMid' : p >= 80 ? 'resultHigh' : p >= 50 ? 'resultMid' : 'resultLow', { perfect: p === 100 });
   if (p >= 80 && !rec.incomplete) confetti(p === 100 ? 70 : 35);
 }
 
@@ -2477,14 +2656,15 @@ Object.assign(actions, {
   },
   saveStudent: function () {
     const name = ui.form.name.trim();
-    if (!name) { toast('請輸入名字'); return; }
+    if (!name) { toastErr('請輸入名字'); return; }
     const s = newStudent(name, ui.form.grade, ui.form.avatar);
     db.students.push(s);
     db.currentId = s.id;
     saveDB();
+    playSound('confirm');
     go('menu');
   },
-  pickStudent: function (el) { db.currentId = el.dataset.id; saveDB(); go('menu'); },
+  pickStudent: function (el) { db.currentId = el.dataset.id; saveDB(); playSound('click'); go('menu'); },
   deleteStudent: function () {
     const s = me();
     confirmBox({
@@ -2518,7 +2698,7 @@ Object.assign(actions, {
       setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
     } catch (e) {
       db.lastBackupAt = prev;
-      toast('備份失敗，請再試一次');
+      toastErr('備份失敗，請再試一次');
       return;
     }
     saveDB();
@@ -2556,6 +2736,7 @@ Object.assign(actions, {
     }, function () {
       s.lessons = s.lessons.filter(function (x) { return x.id !== l.id; });
       saveDB();
+      playSound('pop');
       render();
     });
   },
@@ -2563,13 +2744,14 @@ Object.assign(actions, {
     const s = me();
     const title = document.getElementById('lessonTitle').value.trim();
     const parsed = parseLesson(document.getElementById('lessonWords').value);
-    if (!title) { toast('請輸入課文名稱'); return; }
-    if (!parsed.words.length) { toast('請最少輸入一個詞語'); return; }
+    if (!title) { toastErr('請輸入課文名稱'); return; }
+    if (!parsed.words.length) { toastErr('請最少輸入一個詞語'); return; }
     const existing = ui.editLessonId && s.lessons.find(function (l) { return l.id === ui.editLessonId; });
     if (existing) { existing.title = title; existing.words = parsed.words; existing.hints = parsed.hints; }
     else { s.lessons.push({ id: uid(), title: title, words: parsed.words, hints: parsed.hints }); }
     saveDB();
     toast('已儲存 ✓');
+    playSound('confirm');
     actions.goLessons();
   }
 });
@@ -2649,7 +2831,7 @@ Object.assign(actions, {
 
 /* ---------- 默書 ---------- */
 Object.assign(actions, {
-  goSetup: function (el) { initSetup(me(), el.dataset.source); go('setup'); },
+  goSetup: function (el) { initSetup(me(), el.dataset.source); playSound('click'); go('setup'); },
   setOpt: function (el) {
     const key = el.dataset.key;
     // 轉「默邊度」：數量重設為新模式嘅預設（課文 12、錯字怪獸 10）
@@ -2723,12 +2905,23 @@ Object.assign(actions, {
       if (hasKey(LANGS, el.dataset.val)) ui.voiceLang = el.dataset.val;   // 預設朗讀語言一改，聲音編輯語言跟住轉
       updateVoiceNotice();
     }
+    playSound('click');
   },
   setShortcuts: function (el) {
     const s = me();
     s.prefs.shortcuts = el.dataset.val === '1';
     saveDB();
     selectInGroup(el);
+    playSound('click');
+  },
+  setSound: function (el) {   // 音效開關：開啟時用該刻設定出一聲 click，等用戶知道有效；關閉時 canPlay 自然靜音
+    const s = me();
+    s.prefs.sound = el.dataset.val === '1';
+    saveDB();
+    selectInGroup(el);
+    const vol = document.getElementById('soundVol');
+    if (vol) vol.disabled = !s.prefs.sound;
+    playSound('click');
   },
   toggleLesson: function (el) {
     const ids = ui.setup.lessonIds;
@@ -2761,7 +2954,7 @@ Object.assign(actions, {
     const s = me();
     const c = ui.setup;
     const mode = normaliseMode(c.mode);   // 白名單；非法值（包括已移除嘅 'normal'）回落預設
-    if (mode === 'timed' && !('speechSynthesis' in window)) { toast('呢個瀏覽器唔支援朗讀，用唔到定時默書'); return; }
+    if (mode === 'timed' && !('speechSynthesis' in window)) { toastErr('呢個瀏覽器唔支援朗讀，用唔到定時默書'); return; }
     let words = [];
     let label = '';
     let hints;
@@ -2771,7 +2964,7 @@ Object.assign(actions, {
       hints = hintMap(s.lessons);   // 錯字喺邊課有提示句都讀埋
     } else {
       const picked = s.lessons.filter(function (l) { return c.lessonIds.indexOf(l.id) !== -1; });
-      if (!picked.length) { toast('請先揀最少一課'); return; }
+      if (!picked.length) { toastErr('請先揀最少一課'); return; }
       hints = hintMap(picked);
       const seen = new Set();
       picked.forEach(function (l) {
@@ -2781,7 +2974,7 @@ Object.assign(actions, {
         ? picked[0].title + ' 等' + picked.length + '課'
         : picked.map(function (l) { return l.title; }).join('、');
     }
-    if (!words.length) { toast('冇詞語可以默'); return; }
+    if (!words.length) { toastErr('冇詞語可以默'); return; }
     const total = words.length;
     // 兩個模式都可以揀默幾多個：最少 1 個，最多係全部，超出嘅數字會被限制返
     const n = c.count != null ? Math.max(1, Math.min(c.count, total)) : total;
@@ -2800,6 +2993,7 @@ Object.assign(actions, {
       saveDB();
     }
     unlockSpeech();
+    playSound('start');   // 此刻 ui.view 仍係 setup／result，未進入默書，所以有聲
     ui.quiz = {
       source: c.source, label: label, words: words, idx: 0, results: [],
       added: [], removed: [], hurt: [], lang: p.lang, speed: p.speed, shown: 0,
@@ -3027,6 +3221,7 @@ function selfNext() {
   if (q.idx === q.words.length - 1) {
     // 剛切到最後一個詞語 SELF_LAST_GUARD_MS 內忽略「完成，對答案」，防連點令學生未聽最後一個詞語就掉入不可返回嘅對答案
     if (performance.now() - q.stepAt < SELF_LAST_GUARD_MS) return;
+    playSound('confirm', { allowInQuiz: true });   // 此刻 ui.view 仍係 quiz，所以要明確例外；全檔唯一一處
     enterReview();
     return;
   }
@@ -3102,7 +3297,7 @@ function rvIndex(q, raw) {
 function commitReview() {
   const q = ui.quiz, s = me();
   if (!q || q.phase !== 'review' || q.committed) return;
-  if (!s) { toast('搵唔到同學資料，今次冇記錄'); go('home'); return; }
+  if (!s) { toastErr('搵唔到同學資料，今次冇記錄'); go('home'); return; }
   q.committed = true;
   ui.clickGuardUntil = performance.now() + CLICK_GUARD_MS;
   q.results = [];
@@ -3259,6 +3454,7 @@ Object.assign(actions, {
     me().prefs.timed.reads = n;
     saveDB();
     refreshTimedUi();
+    playSound('click');
   },
   timedDefaults: function () {
     me().prefs.timed.secs = TIMED_SECS_DEFAULT.slice();
@@ -3450,6 +3646,11 @@ document.addEventListener('click', function (e) {
   }
 });
 
+/* 第一次手勢就解鎖音效（capture：先於 action 處理；iOS 要 click／touchend 先得）。冇開音效唔會建立 context */
+['click', 'touchend', 'keydown'].forEach(function (t) {
+  document.addEventListener(t, unlockAudio, { capture: true, passive: true });
+});
+
 document.addEventListener('input', function (e) {
   if (e.target.id === 'nameInput') ui.form.name = e.target.value;
   if (e.target.id === 'lessonWords') {
@@ -3463,6 +3664,16 @@ document.addEventListener('input', function (e) {
     const v = Number(e.target.value);
     ui.setup.count = v >= total ? null : v;   // 拉到最右 = 全部
     refreshCount();
+  }
+  if (e.target.id === 'soundVol') {
+    // 拖動期間只更新畫面同記憶體入面嘅 prefs，唔寫 localStorage、唔出聲（放手先寫同試播）
+    const s = me();
+    if (!s) return;
+    s.prefs.soundVol = cleanSoundVol(Number(e.target.value) / 100);
+    const v = Math.round(s.prefs.soundVol * 100);
+    document.getElementById('soundVolOut').textContent = v + '%';
+    e.target.setAttribute('aria-valuetext', v + '%');
+    e.target.style.setProperty('--pct', v + '%');
   }
 });
 
@@ -3512,6 +3723,12 @@ document.addEventListener('change', function (e) {
     renderVoicePicker();
     return;
   }
+  if (e.target.id === 'soundVol') {
+    // 放手（鍵盤每一步）：先寫入，再用該刻音量試播一聲；音量 0 時 canPlay 自然靜音
+    saveDB();
+    playSound('confirm');
+    return;
+  }
   if (e.target.id !== 'importFile') return;
   const file = e.target.files && e.target.files[0];
   if (!file) return;
@@ -3523,7 +3740,7 @@ document.addEventListener('change', function (e) {
       try { raw = JSON.parse(reader.result); } catch (err) { throw new Error('唔係有效嘅備份檔案'); }
       data = normaliseDB(raw);   // 同載入 localStorage 行同一條校驗
     } catch (err) {
-      toast('還原失敗：' + err.message);   // 唔會寫入 localStorage
+      toastErr('還原失敗：' + err.message);   // 唔會寫入 localStorage
       return;
     }
     const replaceAll = function () {
@@ -3562,7 +3779,7 @@ document.addEventListener('change', function (e) {
         toast('合併完成：新增 ' + a.students + ' 位同學、' + a.lessons + ' 課文、' + a.records + ' 次紀錄、' + a.bank + ' 個錯字' +
           (a.conflicts ? '（' + a.conflicts + ' 課同名但內容唔同，已另存一份）' : ''), 6000);
       } catch (err) {
-        toast('合併失敗，資料冇改動');
+        toastErr('合併失敗，資料冇改動');
       }
     });
   };
