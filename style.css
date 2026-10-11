@@ -864,6 +864,7 @@ input[aria-invalid=true] { border-color: var(--red); }
 .mode-opt b { display: block; font-size: 1.05rem; }
 .mode-opt small { display: block; margin-top: 2px; font-size: .85rem; color: var(--muted); }
 .mode-opt.on { background: var(--orange); border-color: var(--orange-d); color: #fff; box-shadow: 0 3px 0 var(--orange-d); }
+.mode-opt small.mode-note { margin-top: 4px; }
 .mode-opt.on b::before { content: '✓ '; }
 .mode-opt.on small { color: #fff; }   /* 白字 on #C44E0A，同 .chip.on */
 .mode-opt[disabled] { border-style: dashed; background: #F2F2F2; cursor: not-allowed; pointer-events: none; color: var(--text); }

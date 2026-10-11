@@ -33,8 +33,8 @@ const SHARE_PAYLOAD_MAX = 20000; // 分享連結 #lesson= 後面最多幾多字�
 const SHARE_LESSONS_MAX = 100;   // 一位同學最多幾多課（只喺加入分享課文時檢查）
 const LESSON_COUNT_DEFAULT = 12;   // 課文模式預設默幾多個詞語
 const QUIZ_MODES = { timed: { label: '定時默書', tag: '定時' }, self: { label: '自助默書', tag: '自助' } };
-/* 預設默書方式：有語音就定時，冇就自助。舊紀錄嘅 'normal'（已移除嘅舊方式）只留喺 history[].mode，唔再係可選方式 */
-function defaultMode() { return 'speechSynthesis' in window ? 'timed' : 'self'; }
+/* 預設默書方式：一律自助默書。舊紀錄嘅 'normal'（已移除嘅舊方式）只留喺 history[].mode，唔再係可選方式 */
+function defaultMode() { return 'self'; }
 function normaliseMode(m) { return m === 'timed' || m === 'self' ? m : defaultMode(); }
 const TIER_LABELS = ['2 字或以下', '3 字', '4 字', '5 字或以上'];
 const TIMED_SECS_DEFAULT = [8, 10, 12, 15];
@@ -1957,7 +1957,7 @@ function initSetup(s, source) {
   if (!ids.length && s.lessons.length) ids = [s.lessons[s.lessons.length - 1].id];
   ui.setup = {
     source: source, lessonIds: ids, count: countDefault(source),   // count：數字 = 默幾多個；null = 全部
-    mode: defaultMode()   // 默書方式：timed／self；每次入設定頁都重設為預設方式（有語音＝定時，冇＝自助）
+    mode: defaultMode()   // 默書方式：timed／self；每次入設定頁都重設為預設方式（自助）
   };
 }
 
@@ -3155,17 +3155,16 @@ function timedSettingsHtml(p) {
 function modeCardHtml(c) {
   const noSpeech = !('speechSynthesis' in window);
   const cur = normaliseMode(c.mode);   // 非法值（包括已移除嘅 'normal'）顯示預設方式
-  const opt = function (mode, title, desc, disabled) {
+  const opt = function (mode, title, desc, disabled, note) {
     const on = cur === mode;
     return '<button class="mode-opt' + (on ? ' on' : '') + '" data-action="setOpt" data-key="mode" data-val="' + mode + '"' + pressed(on) + (disabled ? ' disabled' : '') + '>' +
-      '<b>' + title + '</b><small>' + desc + '</small></button>';
+      '<b>' + title + '</b><small>' + desc + '</small>' + (note ? '<small class="mode-note">' + note + '</small>' : '') + '</button>';
   };
-  const timedBlock = cur === 'timed' ? '<p class="muted">朗讀秒數同次數喺主頁「設定」入面改。</p>' : '';
   return '<div class="card" style="margin-top:16px"><h2>默書方式</h2>' +
     '<div class="mode-list" role="group" aria-label="默書方式">' +
-    opt('timed', QUIZ_MODES.timed.label, noSpeech ? '呢個瀏覽器唔支援朗讀，用唔到定時默書' : '全自動逐個詞語朗讀，每個限時；完成後對答案', noSpeech) +
     opt('self', QUIZ_MODES.self.label, '學生自己按上一個／下一個，不計時；完成後對答案', false) +
-    '</div>' + timedBlock + '</div>';
+    opt('timed', QUIZ_MODES.timed.label, noSpeech ? '呢個瀏覽器唔支援朗讀，用唔到定時默書' : '全自動逐個詞語朗讀，每個限時；完成後對答案', noSpeech, '朗讀秒數同次數喺主頁「設定」入面改。') +
+    '</div></div>';
 }
 
 /* 即時儲存、只更新對應 DOM（唔重畫整頁，焦點唔會丟） */
