@@ -782,23 +782,22 @@ input[aria-invalid=true] { border-color: var(--red); }
 }
 .voice-select:focus-visible { outline: 3px solid rgba(196, 78, 10, .4); outline-offset: 2px; border-color: var(--orange); }
 
-/* ---------- 列印練習紙（T5.5）：預覽 dialog ---------- */
-.modal.print-modal { max-width: 760px; text-align: left; }
-.print-modal .m-ico { display: none; }
-.print-modal h3 { text-align: center; }
-.modal .pp-title { color: var(--text); font-size: 1rem; margin: 10px 0 2px; overflow-wrap: anywhere; }
-.modal .pp-title span { color: var(--muted); font-size: .9rem; }
+/* ---------- 列印練習紙（T5.5）：獨立頁面 ---------- */
+.print-page .pp-intro { font-size: .9rem; margin: 6px 0 0; }
+.print-page .pp-title { color: var(--text); font-size: 1rem; margin: 10px 0 2px; overflow-wrap: anywhere; }
+.print-page .pp-title span { color: var(--muted); font-size: .9rem; }
 .pp-opts { display: flex; flex-wrap: wrap; gap: 0 18px; }
 .pp-group[hidden], .pp-nohint[hidden] { display: none; }
 .pp-group .field-label { margin: 10px 0 6px; font-size: .9rem; }
 .pp-opts .toggle-select { flex-wrap: wrap; gap: 8px; }
 .pp-opts .chip { flex: none; min-height: 44px; padding: 4px 14px; font-size: .9rem; white-space: nowrap; }
 .pp-opts .chip[disabled] { opacity: .45; pointer-events: none; }
-.modal .pp-nohint { margin: 4px 0 0; }
+.print-page .pp-nohint { margin: 4px 0 0; }
+.print-page .pp-print { margin-top: 14px; }
 .pp-preview {
   margin-top: 12px;
   min-height: 140px;
-  max-height: 42dvh;
+  max-height: 60dvh;
   overflow: auto;
   padding: 10px;
   border: 2px solid var(--line);
@@ -809,7 +808,10 @@ input[aria-invalid=true] { border-color: var(--red); }
 .pp-preview-inner { min-width: 0; }
 .pp-preview .ps { --cell: 22px; font-size: 14px; }
 .pp-preview .ps-word { content-visibility: auto; contain-intrinsic-size: auto 72px; }
-.print-modal .two-btns { margin-top: 14px; }
+@media (max-width: 480px) {
+  .pp-group { flex: 1 1 100%; }
+  .pp-preview { max-height: 55dvh; padding: 8px; }
+}
 #printRoot { display: none; }
 
 /* ---------- 列印練習紙：紙面（預覽同列印共用）----------

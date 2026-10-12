@@ -165,7 +165,7 @@ let ui = {
   backupSnoozed: false,  // 撳咗「之後再講」：今次開 app 唔再提醒備份
   pinUntil: 0,           // 家長 PIN 解鎖到幾時（毫秒時間戳）；只存記憶體，重新整理即鎖
   printOpts: null,       // 列印練習紙選項（只存記憶體；null = 用 PRINT_DEFAULTS）
-  print: null,           // 目前開住嘅列印預覽快照 { model }；null = 冇開
+  print: null,           // 目前列印頁嘅狀態 { model, back }；null = 冇開
   clickGuardUntil: 0,    // performance.now() 時間戳：喺呢個時間之前忽略點擊（進入對答案／結果頁後防連點）
   lastInputKbd: false    // 最近一次操作係咪鍵盤（click 的 detail === 0 或 keydown）
 };
@@ -1146,7 +1146,6 @@ document.addEventListener('pointerdown', function (e) {
    - validate(back)：撳確定／輸入框內撳 Enter 時先行；回傳 true 先關閉並執行 onOk，
      回傳字串＝顯示喺 .field-error[role=alert]，dialog 不關，焦點返去第一個輸入框
    - focusSel：開框時嘅初始焦點（預設係取消掣）
-   - wide：寬版 dialog（.modal 加 print-modal class，列印預覽用）
    - keepOpen：撳確定時唔關框，只執行 onOk(back)（唔經 validate）；關閉一律走取消／Esc／背景＝onCancel
    - onOpen(back)：dialog 加入頁面同初始焦點之後執行一次 */
 function confirmBox(opts, onOk, onCancel) {
@@ -1158,7 +1157,7 @@ function confirmBox(opts, onOk, onCancel) {
   const noBtn = '<button class="btn ghost" data-m="no">取消</button>';
   const btns = opts.single ? okBtn : opts.altText ? okBtn + altBtn + noBtn : noBtn + okBtn;
   back.innerHTML =
-    '<div class="modal' + (opts.wide ? ' print-modal' : '') + '" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
+    '<div class="modal" role="dialog" aria-modal="true" aria-label="' + esc(opts.title) + '">' +
     '<div class="m-ico">' + (opts.icon || '❓') + '</div>' +
     '<h3>' + esc(opts.title) + '</h3><p>' + esc(opts.text || '') + '</p>' +
     (opts.bodyHtml || '') +
@@ -1404,8 +1403,10 @@ function render() {
   const views = {
     home: homeView, add: addView, menu: menuView, lessons: lessonsView,
     lessonEdit: lessonEditView, lessonImport: lessonImportView, setup: setupView, settings: settingsView, quiz: quizView,
-    result: resultView, stats: statsView, history: historyView, record: recordView
+    result: resultView, stats: statsView, history: historyView, record: recordView, print: printView
   };
+  if (ui.view === 'print' && !ui.print) ui.view = 'menu';   // 後備：列印狀態冇咗（例如重新整理後）唔好白畫面
+  if (ui.view !== 'print' && (ui.print || document.getElementById('printRoot'))) closePrint();   // 離開列印頁一律清理
   // 只有換畫面先播入場動畫，畫面內更新唔會閃
   const animate = ui.view !== lastView;
   lastView = ui.view;
@@ -1413,6 +1414,7 @@ function render() {
     (views[ui.view] || homeView)(s) + '</div>';
   if (ui.view === 'quiz') afterQuizRender();
   if (ui.view === 'setup') refreshCount();
+  if (ui.view === 'print') refreshPrint();
 
   // 焦點管理：換畫面 → 搬去新畫面標題；同一畫面重畫 → 還原到同一粒掣（搵唔到先去標題）。
   // 第一次畫（開 app）同確認框打開期間唔搬
@@ -1708,7 +1710,7 @@ function ppGroup(key, label, items) {
     }).join('') + '</div></div>';
 }
 
-function printDialogBodyHtml(m) {
+function printPageBodyHtml(m) {
   return '<p class="pp-title"><b>' + esc(m.source === 'bank' ? '錯字怪獸清單' : m.title) + '</b>　<span>' + (m.source === 'history' && m.dateText ? esc(m.dateText) + ' · ' : '') + '共 ' + Number(m.words.length) + ' 個詞語</span></p>' +
     '<div class="pp-opts">' +
     ppGroup('mode', '紙張', [['practice', '✏️ 練習紙'], ['dictation', '📝 默書紙']]) +
@@ -1718,10 +1720,11 @@ function printDialogBodyHtml(m) {
     ppGroup('answers', '附答案頁', [['1', '附上'], ['0', '唔附']]) +
     '</div><p class="muted pp-nohint" hidden>呢批詞語冇提示句</p>' +
     '<p class="sr-only" id="ppSummary" role="status" aria-live="polite"></p>' +
+    '<button type="button" class="btn green block pp-print" data-action="printNow">🖨️ 列印</button>' +
     '<div class="pp-preview" tabindex="0" role="group" aria-label="預覽（示意）"><div class="pp-preview-inner" aria-hidden="true"></div></div>';
 }
 
-/* 重畫預覽同 #printRoot（同一份 HTML），並更新選項狀態；唔重建 dialog，焦點唔會跳 */
+/* 重畫預覽同 #printRoot（同一份 HTML），並更新選項狀態；唔重畫頁面，焦點唔會跳 */
 function refreshPrint() {
   if (!ui.print) return;
   const m = ui.print.model;
@@ -1732,7 +1735,7 @@ function refreshPrint() {
   const root = document.getElementById('printRoot');
   if (inner) inner.innerHTML = html;
   if (root) root.innerHTML = html;
-  document.querySelectorAll('.print-modal [data-action=printOpt]').forEach(function (btn) {
+  document.querySelectorAll('.print-page [data-action=printOpt]').forEach(function (btn) {
     const key = btn.dataset.key;
     const cur = key === 'mode' ? o.mode : key === 'cells' ? String(o.cells) : (o[key] ? '1' : '0');
     const on = cur === btn.dataset.val;
@@ -1741,10 +1744,10 @@ function refreshPrint() {
     if (key === 'hints') btn.disabled = !m.hasHints;
   });
   const hide = { cells: dict, trace: dict, answers: !dict };
-  document.querySelectorAll('.print-modal .pp-group').forEach(function (g) {
+  document.querySelectorAll('.print-page .pp-group').forEach(function (g) {
     g.hidden = !!hide[g.dataset.opt];
   });
-  const nh = document.querySelector('.print-modal .pp-nohint');
+  const nh = document.querySelector('.print-page .pp-nohint');
   if (nh) nh.hidden = m.hasHints;
   const sum = document.getElementById('ppSummary');
   if (sum) {
@@ -1765,7 +1768,7 @@ function doPrint() {
   const m = ui.print && ui.print.model;
   if (!m) return;
   const go = function () {
-    if (!ui.print) return;   // 等字體期間 dialog 已關
+    if (!ui.print) return;   // 等字體期間已離開列印頁
     try { window.print(); } catch (e) { toastErr('列印唔到，請用瀏覽器選單列印'); }
   };
   try {
@@ -1782,25 +1785,31 @@ function doPrint() {
   }
 }
 
-function openPrintDialog(src, id) {
+/* 列印頁（ui.view === 'print'）：選項喺上、預覽喺下；返回掣返去開頁時嘅畫面 */
+function printView() {
+  const m = ui.print && ui.print.model;
+  if (!m) return '';
+  return '<div class="topnav"><button class="back" data-action="printBack">← 返回</button></div>' +
+    '<div class="card print-page"><h2>列印練習紙</h2>' +
+    '<p class="muted pp-intro">先睇預覽，再撳「列印」。預覽只係示意，實際分行同分頁以瀏覽器列印預覽為準。</p>' +
+    printPageBodyHtml(m) + '</div>';
+}
+
+/* 開列印頁：建立快照同 #printRoot（掛喺 body，唔會被 render 洗走），再 go('print')；
+   返回目標＝開頁時嘅畫面（白名單，其他當主頁） */
+function openPrintPage(src, id) {
   const m = printModel(me(), src, id);
   if (!m) { toastErr('冇詞語可以列印'); return; }
   if (document.querySelector('.modal-back')) return;
-  ui.print = { model: m };
+  const from = ['menu', 'lessons', 'stats', 'history'].indexOf(ui.view) !== -1 ? ui.view : 'menu';
+  ui.print = { model: m, back: from };
   const old = document.getElementById('printRoot');
   if (old) old.remove();
   const root = document.createElement('div');
   root.id = 'printRoot';
   document.body.appendChild(root);
   document.body.classList.add('is-printing');
-  confirmBox({
-    icon: '🖨️', title: '列印預覽',
-    text: '先睇預覽，再撳「列印」。預覽只係示意，實際分行同分頁以瀏覽器列印預覽為準。',
-    okText: '🖨️ 列印', wide: true, keepOpen: true,
-    bodyHtml: printDialogBodyHtml(m),
-    focusSel: '[data-action=printOpt]',
-    onOpen: refreshPrint
-  }, doPrint, closePrint);
+  go('print');
 }
 
 function lessonsView(s) {
@@ -2843,9 +2852,11 @@ Object.assign(actions, {
 
 /* ---------- 列印練習紙（T5.5）：唔改資料，唔經 guarded（唔需要 PIN） ---------- */
 Object.assign(actions, {
-  printLesson: function (el) { openPrintDialog('lesson', el.dataset.id); },
-  printBank: function () { openPrintDialog('bank'); },
-  printHistory: function (el) { openPrintDialog('history', el.dataset.id); },
+  printLesson: function (el) { openPrintPage('lesson', el.dataset.id); },
+  printBank: function () { openPrintPage('bank'); },
+  printHistory: function (el) { openPrintPage('history', el.dataset.id); },
+  printBack: function () { go((ui.print && ui.print.back) || 'menu'); },   // go() → render() 會清理列印狀態
+  printNow: function () { doPrint(); },
   printOpt: function (el) {
     if (!ui.print) return;
     const key = el.dataset.key;
