@@ -1578,7 +1578,9 @@ function menuView(s) {
     '<button class="menu-btn sm b" data-action="goStats"><span class="ico">📊</span>我的成績</button>' +
     '<button class="menu-btn sm p" data-action="printBank" aria-label="列印錯字練習紙"' + (bankCount ? '' : ' disabled') + '><span class="ico">🖨️</span>列印錯字練習紙</button>' +
     '</div>' + homeNoticesHtml() +
-    '<div class="footer-links"><button class="link danger" data-action="deleteStudent">刪除呢位同學</button></div>';
+    '<div class="footer-links">' +
+    '<button class="link" data-action="exportStudent">備份呢位同學</button>' +
+    '<button class="link danger" data-action="deleteStudent">刪除呢位同學</button></div>';
 }
 
 /* ---------- 列印練習紙（T5.5） ----------
@@ -2635,6 +2637,38 @@ function finishQuiz(s) {
    ===================================================== */
 const actions = {};
 
+/* 下載 JSON 檔（整份備份同個別同學備份共用） */
+function downloadJson(obj, filename) {
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+}
+
+/* 個別同學備份：格式同整份備份一致，students 只放呢位同學；唔含 parentPin；
+   lastBackupAt 設 null（個別備份唔代表整份已備份） */
+function buildStudentBackup(s) {
+  return { students: [JSON.parse(JSON.stringify(s))], currentId: s.id, lastBackupAt: null };
+}
+
+/* 同學名轉做安全檔名片段：換走非法字元同控制字元，空白合併，去頭尾 _ 同 .，最多 20 個字（按 code point） */
+function safeNamePart(name) {
+  let t = String(name == null ? '' : name)
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/^[_.]+|[_.]+$/g, '');
+  t = Array.from(t).slice(0, 20).join('').replace(/^[_.]+|[_.]+$/g, '');
+  return t || 'student';
+}
+
+function studentBackupFileName(name, d) {
+  return 'chi-vocab-' + safeNamePart(name) + '-' + d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + '.json';
+}
+
 /* 同一組選項入面，只更新 class，唔重新畫整個畫面（避免閃爍） */
 function selectInGroup(el) {
   Array.prototype.forEach.call(el.parentElement.children, function (x) {
@@ -2688,14 +2722,7 @@ Object.assign(actions, {
       // 備份檔唔包括家長 PIN（PIN 屬於呢部機嘅防誤觸設定，唔跟檔案流動）
       const out = Object.assign({}, db);
       delete out.parentPin;
-      const blob = new Blob([JSON.stringify(out, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'chi-vocab-backup-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.json';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+      downloadJson(out, 'chi-vocab-backup-' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '.json');
     } catch (e) {
       db.lastBackupAt = prev;
       toastErr('備份失敗，請再試一次');
@@ -2704,6 +2731,18 @@ Object.assign(actions, {
     saveDB();
     toast('已備份 ✓');
     render();   // 更新提醒同「上次備份」
+  },
+  /* 個別同學備份：只匯出當前同學，唔更新 lastBackupAt、唔受 PIN 保護（同整份備份一致） */
+  exportStudent: function () {
+    const s = me();
+    if (!s) return;
+    try {
+      downloadJson(buildStudentBackup(s), studentBackupFileName(s.name, new Date()));
+    } catch (e) {
+      toastErr('備份失敗，請再試一次');
+      return;
+    }
+    toast('已備份「' + s.name + '」✓');
   },
   snoozeBackup: function () { ui.backupSnoozed = true; render(); },
   dismissA2hs: function () {
